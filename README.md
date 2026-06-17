@@ -4,7 +4,7 @@
 
 Поддерживает обычные client subscription endpoints для Happ/Hiddify/v2rayN/v2rayNG/NekoBox/Clash Meta/sing-box: addon пробует несколько User-Agent, понимает plain/base64/base64url списки, а также JSON/YAML-обертки с proxy-ссылками или base64-полями.
 
-Если сам роутер не может скачать URL подписки из-за DNS/маршрутизации, заполните поле `Subscription Content`: туда можно вставить ответ подписки или сами `vless://`, `ss://`, `trojan://`, `socks4://`, `socks5://`, `hy2://` ссылки. После первой успешной загрузки addon сохраняет рабочий список в `/etc/podkop-subscriptions/cache/` и использует его, если очередное обновление подписки временно недоступно.
+После первой успешной загрузки addon сохраняет рабочий список в `/etc/podkop-subscriptions/cache/` и использует его, если очередное обновление URL-подписки временно недоступно.
 
 ## Требования
 
@@ -20,15 +20,9 @@ wget -O - https://raw.githubusercontent.com/asv-debug/Podkop_SUB/main/install.sh
 
 После установки откройте LuCI: `Services -> Podkop -> Sections`, выберите `Connection Type: Proxy`, затем `Configuration Type: Subscription URL`.
 
-Если провайдер требует конкретный клиентский User-Agent, укажите его в поле `Subscription User-Agent`. Для Happ обычно подходит:
-
-```text
-Happ/1.0
-```
+В поле `Subscription User-Agent` по умолчанию включено автоопределение. Если провайдер требует конкретный клиент, выберите его из списка: Happ, Hiddify Next, v2rayN, v2rayNG, NekoBox, Clash Meta for Android, sing-box, Shadowrocket или curl.
 
 Автообновление подписки настраивается в той же секции: каждый час, каждый день в выбранное время или каждую неделю в выбранный день и время.
-
-Если URL подписки не открывается с OpenWrt, но открывается с телефона/ПК, скопируйте содержимое ответа и вставьте его в `Subscription Content`. В этом режиме URL можно оставить пустым.
 
 ## Что делает пакет
 

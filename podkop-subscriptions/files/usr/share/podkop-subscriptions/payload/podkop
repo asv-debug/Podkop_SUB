@@ -78,25 +78,24 @@ check_requirements() {
     if has_outbound_section; then
         log "Outbound section found" "debug"
     else
-        log "Outbound section not found. Please check your configuration file (missing proxy_string, subscription_urls, subscription_content, selector_proxy_links, urltest_proxy_links, outbound_json, or interface). Aborted." "error"
+        log "Outbound section not found. Please check your configuration file (missing proxy_string, subscription_urls, selector_proxy_links, urltest_proxy_links, outbound_json, or interface). Aborted." "error"
         exit 1
     fi
 }
 
 _check_outbound_section() {
     local section="$1"
-    local proxy_string interface outbound_json urltest_proxy_links subscription_urls subscription_content
+    local proxy_string interface outbound_json urltest_proxy_links subscription_urls
 
     config_get proxy_string "$section" "proxy_string"
     config_get selector_proxy_links "$section" "selector_proxy_links"
     config_get urltest_proxy_links "$section" "urltest_proxy_links"
     config_get subscription_urls "$section" "subscription_urls"
-    config_get subscription_content "$section" "subscription_content"
     config_get outbound_json "$section" "outbound_json"
     config_get interface "$section" "interface"
 
     if [ -n "$proxy_string" ] || [ -n "$selector_proxy_links" ] || [ -n "$urltest_proxy_links" ] ||
-        [ -n "$subscription_urls" ] || [ -n "$subscription_content" ] || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
+        [ -n "$subscription_urls" ] || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
         section_exists=0
     fi
 }
@@ -219,8 +218,26 @@ restart() {
 }
 
 # Migrations and validation funcs
+remove_obsolete_subscription_content() {
+    local section="$1"
+    local cache_file
+
+    if uci -q get "podkop.$section.subscription_content" > /dev/null 2>&1; then
+        uci -q delete "podkop.$section.subscription_content"
+        cache_file="$(get_subscription_cache_file "$section")"
+        rm -f "$cache_file"
+        obsolete_subscription_content_removed=1
+    fi
+}
+
 migration() {
-    :
+    obsolete_subscription_content_removed=0
+    config_foreach remove_obsolete_subscription_content "section"
+
+    if [ "$obsolete_subscription_content_removed" -eq 1 ]; then
+        uci commit "podkop" && config_load "$PODKOP_CONFIG"
+        log "Removed obsolete subscription_content option from Podkop config and cleared affected subscription cache"
+    fi
 }
 
 validate_service() {
@@ -1395,7 +1412,11 @@ sing_box_save_config() {
 sing_box_config_check() {
     local config_path="$1"
 
-    if ! sing-box -c "$config_path" check > /dev/null 2>&1; then
+    local check_output
+    if ! check_output="$(sing-box -c "$config_path" check 2>&1)"; then
+        echo "$check_output" | while IFS= read -r line; do
+            [ -n "$line" ] && log "sing-box check: $line" "error"
+        done
         log "Sing-box configuration $config_path is invalid. Aborted." "fatal"
         exit 1
     fi
@@ -1499,43 +1520,19 @@ get_subscription_cache_file() {
     echo "/etc/podkop-subscriptions/cache/$safe_section.links"
 }
 
-import_subscription_content() {
-    local section="$1"
-    local subscription_content="$2"
-    local output_file="$3"
-
-    local tmpfile links_tmpfile link_count
-    tmpfile="$(mktemp)"
-    links_tmpfile="$(mktemp)"
-
-    printf '%s\n' "$subscription_content" > "$tmpfile"
-
-    if extract_proxy_links_from_subscription_file "$tmpfile" "$links_tmpfile"; then
-        link_count="$(wc -l < "$links_tmpfile" | tr -d ' ')"
-        log "Imported $link_count proxy links from Subscription Content for '$section' section"
-        cat "$links_tmpfile" >> "$output_file"
-        rm -f "$tmpfile" "$links_tmpfile"
-        return 0
-    fi
-
-    rm -f "$tmpfile" "$links_tmpfile"
-    return 1
-}
-
 prepare_subscription_proxy_links() {
     local section="$1"
     local output_file="$2"
 
-    local subscription_urls subscription_content subscription_max_servers subscription_user_agent cache_file
+    local subscription_urls subscription_max_servers subscription_user_agent cache_file
     config_get subscription_urls "$section" "subscription_urls"
-    config_get subscription_content "$section" "subscription_content"
     config_get subscription_max_servers "$section" "subscription_max_servers" "50"
-    config_get subscription_user_agent "$section" "subscription_user_agent"
+    config_get subscription_user_agent "$section" "subscription_user_agent" "auto"
 
     cache_file="$(get_subscription_cache_file "$section")"
 
-    if [ -z "$subscription_urls" ] && [ -z "$subscription_content" ] && [ ! -s "$cache_file" ]; then
-        log "Subscription URLs and Subscription Content are not set for '$section' section" "error"
+    if [ -z "$subscription_urls" ] && [ ! -s "$cache_file" ]; then
+        log "Subscription URLs are not set for '$section' section" "error"
         return 1
     fi
 
@@ -1550,17 +1547,11 @@ prepare_subscription_proxy_links() {
     merged_tmpfile="$(mktemp)"
     : > "$merged_tmpfile"
 
-    if [ -n "$subscription_content" ]; then
-        if ! import_subscription_content "$section" "$subscription_content" "$merged_tmpfile"; then
-            log "No supported proxy links found in Subscription Content for '$section' section" "error"
-        fi
-    fi
-
     local url user_agent imported
     for url in $subscription_urls; do
         imported=1
 
-        if [ -n "$subscription_user_agent" ]; then
+        if [ -n "$subscription_user_agent" ] && [ "$subscription_user_agent" != "auto" ]; then
             if try_import_subscription_url "$url" "$subscription_user_agent" "$merged_tmpfile"; then
                 imported=0
             fi
@@ -1577,6 +1568,8 @@ prepare_subscription_proxy_links() {
                 "sing-box/1.12.0" \
                 "Shadowrocket/2.2.53" \
                 "curl/8.0"; do
+                [ "$user_agent" = "$subscription_user_agent" ] && continue
+
                 if try_import_subscription_url "$url" "$user_agent" "$merged_tmpfile"; then
                     imported=0
                     break

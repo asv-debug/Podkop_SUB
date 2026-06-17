@@ -5,6 +5,45 @@
 "require tools.widgets as widgets";
 "require view.podkop.main as main";
 
+const SUBSCRIPTION_UA_OPTIONS = [
+  ["auto", "Auto detect", "Автоопределение"],
+  ["Happ/1.0", "Happ", "Happ"],
+  ["HiddifyNext/2.5.7", "Hiddify Next", "Hiddify Next"],
+  ["v2rayN/7.0", "v2rayN", "v2rayN"],
+  ["v2rayNG/1.9.31", "v2rayNG", "v2rayNG"],
+  ["NekoBox/1.3", "NekoBox", "NekoBox"],
+  [
+    "ClashMetaForAndroid/2.11.10",
+    "Clash Meta for Android",
+    "Clash Meta for Android",
+  ],
+  ["sing-box/1.12.0", "sing-box", "sing-box"],
+  ["Shadowrocket/2.2.53", "Shadowrocket", "Shadowrocket"],
+  ["curl/8.0", "curl", "curl"],
+];
+
+function isRussianLanguage() {
+  let lang =
+    typeof L !== "undefined" && L.env && L.env.lang
+      ? String(L.env.lang).toLowerCase()
+      : "";
+
+  if (
+    !lang &&
+    typeof document !== "undefined" &&
+    document.documentElement &&
+    document.documentElement.lang
+  ) {
+    lang = String(document.documentElement.lang).toLowerCase();
+  }
+
+  return lang === "ru" || lang.startsWith("ru_") || lang.startsWith("ru-");
+}
+
+function i18n(en, ru) {
+  return isRussianLanguage() ? ru : _(en);
+}
+
 function createSectionContent(section) {
   let o = section.option(
     form.ListValue,
@@ -24,7 +63,7 @@ function createSectionContent(section) {
     _("Select how to configure the proxy"),
   );
   o.value("url", _("Connection URL"));
-  o.value("subscription", _("Subscription URL"));
+  o.value("subscription", i18n("Subscription URL", "URL подписка"));
   o.value("selector", _("Selector"));
   o.value("urltest", _("URLTest"));
   o.value("outbound", _("Outbound Config"));
@@ -63,13 +102,14 @@ function createSectionContent(section) {
   o = section.option(
     form.DynamicList,
     "subscription_urls",
-    _("Subscription URLs"),
-    _(
-      "HTTP/HTTPS subscription URLs with vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links. Optional if Subscription Content is filled",
+    i18n("Subscription URLs", "URL подписок"),
+    i18n(
+      "HTTP/HTTPS subscription URLs with vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links",
+      "HTTP/HTTPS URL подписок с vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// ссылками",
     ),
   );
   o.depends("proxy_config_type", "subscription");
-  o.rmempty = true;
+  o.rmempty = false;
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return true;
@@ -87,9 +127,10 @@ function createSectionContent(section) {
   o = section.option(
     form.Value,
     "subscription_max_servers",
-    _("Subscription Server Limit"),
-    _(
+    i18n("Subscription Server Limit", "Лимит серверов подписки"),
+    i18n(
       "Maximum number of servers imported from subscriptions. Use 0 to import all servers",
+      "Максимальное количество серверов, импортируемых из подписок. Укажите 0, чтобы импортировать все серверы",
     ),
   );
   o.default = "50";
@@ -97,7 +138,10 @@ function createSectionContent(section) {
   o.depends("proxy_config_type", "subscription");
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
-      return _("Server limit cannot be empty");
+      return i18n(
+        "Server limit cannot be empty",
+        "Лимит серверов не может быть пустым",
+      );
     }
 
     const parsed = parseInt(value, 10);
@@ -111,44 +155,41 @@ function createSectionContent(section) {
       return true;
     }
 
-    return _("Must be a number in the range of 0 - 500");
+    return i18n(
+      "Must be a number in the range of 0 - 500",
+      "Введите число в диапазоне 0 - 500",
+    );
   };
 
   o = section.option(
-    form.Value,
+    form.ListValue,
     "subscription_user_agent",
-    _("Subscription User-Agent"),
-    _(
-      "Optional. Leave empty to try Happ, Hiddify, v2rayN, v2rayNG, NekoBox, Clash Meta, sing-box and other client User-Agents automatically",
+    i18n("Subscription User-Agent", "User-Agent подписки"),
+    i18n(
+      "Select Auto detect to try Happ, Hiddify, v2rayN, v2rayNG, NekoBox, Clash Meta, sing-box and other client User-Agents automatically",
+      "Выберите автоопределение, чтобы автоматически попробовать Happ, Hiddify, v2rayN, v2rayNG, NekoBox, Clash Meta, sing-box и другие клиентские User-Agent",
     ),
   );
-  o.placeholder = "Happ/1.0";
+  SUBSCRIPTION_UA_OPTIONS.forEach(([value, en, ru]) => {
+    o.value(value, i18n(en, ru));
+  });
+  o.default = "auto";
+  o.rmempty = false;
   o.depends("proxy_config_type", "subscription");
-
-  o = section.option(
-    form.TextValue,
-    "subscription_content",
-    _("Subscription Content"),
-    _(
-      "Optional fallback. Paste the subscription response or proxy links when the router cannot download the subscription URL directly",
-    ),
-  );
-  o.depends("proxy_config_type", "subscription");
-  o.rows = 8;
-  o.wrap = "soft";
-  o.textarea = true;
-  o.rmempty = true;
 
   o = section.option(
     form.ListValue,
     "subscription_update_interval",
-    _("Subscription Auto Update"),
-    _("Automatically reload Podkop to download fresh subscription servers"),
+    i18n("Subscription Auto Update", "Автообновление подписки"),
+    i18n(
+      "Automatically reload Podkop to download fresh subscription servers",
+      "Автоматически перезапускать Podkop для загрузки свежих серверов подписки",
+    ),
   );
-  o.value("disabled", _("Disabled"));
-  o.value("1h", _("Every hour"));
-  o.value("1d", _("Every day"));
-  o.value("1w", _("Every week"));
+  o.value("disabled", i18n("Disabled", "Отключено"));
+  o.value("1h", i18n("Every hour", "Каждый час"));
+  o.value("1d", i18n("Every day", "Каждый день"));
+  o.value("1w", i18n("Every week", "Каждую неделю"));
   o.default = "disabled";
   o.rmempty = false;
   o.depends("proxy_config_type", "subscription");
@@ -156,8 +197,11 @@ function createSectionContent(section) {
   o = section.option(
     form.ListValue,
     "subscription_update_time",
-    _("Subscription Update Time"),
-    _("Time of day for daily or weekly subscription updates"),
+    i18n("Subscription Update Time", "Время обновления подписки"),
+    i18n(
+      "Time of day for daily or weekly subscription updates",
+      "Время суток для ежедневного или еженедельного обновления подписки",
+    ),
   );
   for (let hour = 0; hour < 24; hour++) {
     const value = `${String(hour).padStart(2, "0")}:00`;
@@ -171,16 +215,19 @@ function createSectionContent(section) {
   o = section.option(
     form.ListValue,
     "subscription_update_weekday",
-    _("Subscription Update Day"),
-    _("Day of week for weekly subscription updates"),
+    i18n("Subscription Update Day", "День обновления подписки"),
+    i18n(
+      "Day of week for weekly subscription updates",
+      "День недели для еженедельного обновления подписки",
+    ),
   );
-  o.value("1", _("Monday"));
-  o.value("2", _("Tuesday"));
-  o.value("3", _("Wednesday"));
-  o.value("4", _("Thursday"));
-  o.value("5", _("Friday"));
-  o.value("6", _("Saturday"));
-  o.value("0", _("Sunday"));
+  o.value("1", i18n("Monday", "Понедельник"));
+  o.value("2", i18n("Tuesday", "Вторник"));
+  o.value("3", i18n("Wednesday", "Среда"));
+  o.value("4", i18n("Thursday", "Четверг"));
+  o.value("5", i18n("Friday", "Пятница"));
+  o.value("6", i18n("Saturday", "Суббота"));
+  o.value("0", i18n("Sunday", "Воскресенье"));
   o.default = "1";
   o.rmempty = false;
   o.depends("subscription_update_interval", "1w");
