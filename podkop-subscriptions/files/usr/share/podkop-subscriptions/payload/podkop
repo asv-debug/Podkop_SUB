@@ -762,7 +762,20 @@ configure_outbound_handler() {
             while IFS= read -r link; do
                 [ -z "$link" ] && continue
 
-                config="$(sing_box_cf_add_proxy_outbound "$config" "$section-subscription-$i" "$link" "$udp_over_tcp")"
+                local new_config proxy_error_file
+                proxy_error_file="$(mktemp)"
+                new_config="$(sing_box_cf_add_proxy_outbound "$config" "$section-subscription-$i" "$link" "$udp_over_tcp" 2> "$proxy_error_file")"
+                if [ -z "$new_config" ] || ! echo "$new_config" | jq -e . > /dev/null 2>&1; then
+                    log "Skipped invalid subscription proxy link #$i for '$section' section" "warn"
+                    while IFS= read -r line; do
+                        [ -n "$line" ] && log "proxy parser: $line" "debug"
+                    done < "$proxy_error_file"
+                    rm -f "$proxy_error_file"
+                    i=$((i + 1))
+                    continue
+                fi
+                rm -f "$proxy_error_file"
+                config="$new_config"
                 outbound_tag="$(get_outbound_tag_by_section "$section-subscription-$i")"
                 if [ -z "$outbound_tags" ]; then
                     outbound_tags="$outbound_tag"
@@ -1520,6 +1533,34 @@ get_subscription_cache_file() {
     echo "/etc/podkop-subscriptions/cache/$safe_section.links"
 }
 
+filter_subscription_proxy_links() {
+    local section="$1"
+    local input_file="$2"
+    local output_file="$3"
+
+    local link invalid_count valid_count
+    invalid_count=0
+    valid_count=0
+    : > "$output_file"
+
+    while IFS= read -r link; do
+        [ -z "$link" ] && continue
+
+        if is_proxy_url "$link"; then
+            echo "$link" >> "$output_file"
+            valid_count=$((valid_count + 1))
+        else
+            invalid_count=$((invalid_count + 1))
+        fi
+    done < "$input_file"
+
+    if [ "$invalid_count" -gt 0 ]; then
+        log "Skipped $invalid_count invalid proxy links while preparing subscription for '$section' section" "warn"
+    fi
+
+    [ "$valid_count" -gt 0 ]
+}
+
 prepare_subscription_proxy_links() {
     local section="$1"
     local output_file="$2"
@@ -1597,8 +1638,12 @@ prepare_subscription_proxy_links() {
         fi
     fi
 
-    awk '!seen[$0]++' "$merged_tmpfile" > "$output_file"
+    local dedup_tmpfile
+    dedup_tmpfile="$(mktemp)"
+    awk '!seen[$0]++' "$merged_tmpfile" > "$dedup_tmpfile"
     rm -f "$merged_tmpfile"
+    filter_subscription_proxy_links "$section" "$dedup_tmpfile" "$output_file"
+    rm -f "$dedup_tmpfile"
 
     local count
     count="$(wc -l < "$output_file" | tr -d ' ')"

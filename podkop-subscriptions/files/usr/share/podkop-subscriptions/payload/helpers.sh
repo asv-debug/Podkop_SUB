@@ -238,13 +238,83 @@ base64_decode_file() {
 
 is_proxy_url() {
     local url="$1"
-    local scheme
+    local scheme host port userinfo decoded_userinfo
+
+    url="$(url_decode "$url")"
+    url="$(url_strip_fragment "$url")"
     scheme="$(url_get_scheme "$url")"
 
     case "$scheme" in
-    vless | ss | trojan | socks4 | socks4a | socks5 | hysteria2 | hy2) return 0 ;;
+    vless | ss | trojan | socks4 | socks4a | socks5 | hysteria2 | hy2) ;;
     *) return 1 ;;
     esac
+
+    host="$(url_get_host "$url")"
+    port="$(url_get_port "$url")"
+
+    [ -n "$host" ] || return 1
+    case "$scheme" in
+    hysteria2 | hy2)
+        is_valid_hysteria2_port "$port" || return 1
+        ;;
+    *)
+        is_valid_port_number "$port" || return 1
+        ;;
+    esac
+
+    case "$scheme" in
+    vless | trojan | hysteria2 | hy2)
+        [ -n "$(url_get_userinfo "$url")" ] || return 1
+        ;;
+    ss)
+        userinfo="$(url_get_userinfo "$url")"
+        [ -n "$userinfo" ] || return 1
+        if ! is_shadowsocks_userinfo_format "$userinfo"; then
+            decoded_userinfo="$(base64_decode "$userinfo")"
+            is_shadowsocks_userinfo_format "$decoded_userinfo" || return 1
+        fi
+        ;;
+    esac
+
+    return 0
+}
+
+is_valid_port_number() {
+    local port="$1"
+
+    case "$port" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+
+    [ "$port" -ge 1 ] 2> /dev/null && [ "$port" -le 65535 ] 2> /dev/null
+}
+
+is_valid_hysteria2_port() {
+    local port="$1"
+    local entry start end
+
+    [ -n "$port" ] || return 1
+
+    echo "$port" | tr ',' '\n' | while IFS= read -r entry; do
+        entry="$(echo "$entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [ -n "$entry" ] || exit 1
+
+        case "$entry" in
+        *-*)
+            case "$entry" in
+            *-*-*) exit 1 ;;
+            esac
+            start="${entry%-*}"
+            end="${entry#*-}"
+            is_valid_port_number "$start" || exit 1
+            is_valid_port_number "$end" || exit 1
+            [ "$start" -le "$end" ] 2> /dev/null || exit 1
+            ;;
+        *)
+            is_valid_port_number "$entry" || exit 1
+            ;;
+        esac
+    done
 }
 
 extract_proxy_urls_from_file() {
