@@ -119,7 +119,7 @@ main() {
 
     msg "Podkop subscriptions addon installed."
     msg "Open LuCI: Services -> Podkop -> Sections"
-    msg "Select Configuration Type: Subscription, update the server list, then choose one server."
+    msg "Select Configuration Type: Subscription, update the server list, then choose one server in Dashboard."
     msg "If LuCI still shows the old form, clear browser/LuCI cache."
 }
 

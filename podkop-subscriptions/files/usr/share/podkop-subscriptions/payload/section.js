@@ -114,41 +114,6 @@ function getFieldValues(sectionId, optionName, fallback) {
   return normalizeValues(fallback);
 }
 
-function getProxyLinkScheme(link) {
-  return String(link || "").split("://")[0] || "";
-}
-
-function getProxyLinkHost(link) {
-  const value = String(link || "");
-  const withoutScheme = value.includes("://")
-    ? value.slice(value.indexOf("://") + 3)
-    : value;
-  const withoutUser = withoutScheme.includes("@")
-    ? withoutScheme.slice(withoutScheme.lastIndexOf("@") + 1)
-    : withoutScheme;
-
-  return withoutUser.split(/[/?#]/)[0] || "";
-}
-
-function getProxyLinkName(link) {
-  const value = String(link || "");
-  const hashIndex = value.indexOf("#");
-
-  if (hashIndex >= 0 && hashIndex < value.length - 1) {
-    try {
-      return decodeURIComponent(value.slice(hashIndex + 1));
-    } catch (e) {
-      return value.slice(hashIndex + 1);
-    }
-  }
-
-  return `${getProxyLinkScheme(value)}://${getProxyLinkHost(value)}`;
-}
-
-function getSubscriptionLinks(sectionId) {
-  return normalizeValues(uci.get("podkop", sectionId, "subscription_proxy_links"));
-}
-
 function getActiveSubscriptionLink(sectionId) {
   const selected = uci.get("podkop", sectionId, "subscription_selected_proxy_link");
   const selectorLinks = normalizeValues(
@@ -156,216 +121,6 @@ function getActiveSubscriptionLink(sectionId) {
   );
 
   return selected || (selectorLinks.length === 1 ? selectorLinks[0] : "") || "";
-}
-
-function getSubscriptionServerCard(sectionId, index) {
-  return Array.from(
-    document.querySelectorAll(".podkop-subscription-server-card"),
-  ).find(
-    (card) =>
-      card.getAttribute("data-section-id") === sectionId &&
-      card.getAttribute("data-server-index") === String(index),
-  );
-}
-
-function updateSubscriptionLatency(sectionId, index, latency, success) {
-  const card = getSubscriptionServerCard(sectionId, index);
-  if (!card) {
-    return;
-  }
-
-  const node = card.querySelector(".podkop-subscription-latency");
-  if (!node) {
-    return;
-  }
-
-  node.classList.remove(
-    "podkop-subscription-latency-empty",
-    "podkop-subscription-latency-green",
-    "podkop-subscription-latency-yellow",
-    "podkop-subscription-latency-red",
-  );
-
-  if (!success || !latency) {
-    node.textContent = "N/A";
-    node.classList.add("podkop-subscription-latency-empty");
-    return;
-  }
-
-  const value = Number(latency);
-  node.textContent = `${latency}ms`;
-  if (value < 800) {
-    node.classList.add("podkop-subscription-latency-green");
-  } else if (value < 1500) {
-    node.classList.add("podkop-subscription-latency-yellow");
-  } else {
-    node.classList.add("podkop-subscription-latency-red");
-  }
-}
-
-function pingSubscriptionServers(sectionId, button) {
-  const links = getSubscriptionLinks(sectionId);
-  const oldText = button ? button.textContent : "";
-
-  if (links.length === 0) {
-    ui.addNotification(
-      null,
-      E("p", {}, [
-        i18n("Load subscription servers first.", "Сначала обновите список серверов."),
-      ]),
-      "warning",
-    );
-    return Promise.resolve();
-  }
-
-  if (button) {
-    button.disabled = true;
-    button.textContent = i18n("Pinging...", "Пинг...");
-  }
-
-  return fs
-    .exec("/usr/bin/podkop-subscriptions", ["ping-list", links.join("\n")])
-    .then((response) => {
-      const payload = parseResponse(response);
-      if (!payload.success) {
-        throw new Error(payload.error || response.stderr || "ping failed");
-      }
-
-      (payload.results || []).forEach((result) => {
-        updateSubscriptionLatency(
-          sectionId,
-          result.index,
-          result.latency_ms,
-          result.success,
-        );
-      });
-    })
-    .catch((error) => {
-      ui.addNotification(
-        null,
-        E("p", {}, [String(error.message || error)]),
-        "danger",
-      );
-    })
-    .finally(() => {
-      if (button) {
-        button.disabled = false;
-        button.textContent = oldText;
-      }
-    });
-}
-
-function applySubscriptionServer(sectionId, link, card) {
-  if (card) {
-    card.classList.add("podkop-subscription-server-card-loading");
-  }
-
-  return fs
-    .exec("/usr/bin/podkop-subscriptions", ["apply", sectionId, link])
-    .then((response) => {
-      const payload = parseResponse(response);
-      if (!payload.success) {
-        throw new Error(payload.error || response.stderr || "apply failed");
-      }
-
-      ui.addNotification(
-        null,
-        E("p", {}, [
-          i18n(
-            "Server selected and applied.",
-            "Сервер выбран и применён.",
-          ),
-        ]),
-        "info",
-      );
-
-      window.setTimeout(() => window.location.reload(), 1000);
-    })
-    .catch((error) => {
-      if (card) {
-        card.classList.remove("podkop-subscription-server-card-loading");
-      }
-      ui.addNotification(
-        null,
-        E("p", {}, [String(error.message || error)]),
-        "danger",
-      );
-    });
-}
-
-function renderSubscriptionServers(sectionId) {
-  const links = getSubscriptionLinks(sectionId);
-  const selectedLink = getActiveSubscriptionLink(sectionId);
-
-  if (links.length === 0) {
-    return E("div", { class: "podkop-subscription-empty" }, [
-      i18n("No loaded servers.", "Нет загруженных серверов."),
-    ]);
-  }
-
-  return E("div", { class: "podkop-subscription-server-list" }, [
-    E("style", {}, [
-      ".podkop-subscription-server-list{display:flex;flex-direction:column;gap:12px}",
-      ".podkop-subscription-title{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}",
-      ".podkop-subscription-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}",
-      ".podkop-subscription-server-card{border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:12px;cursor:pointer;min-height:72px;display:flex;flex-direction:column;justify-content:space-between;gap:10px;background:rgba(127,127,127,.06)}",
-      ".podkop-subscription-server-card:hover{border-color:#4a90e2}",
-      ".podkop-subscription-server-card-active{border-color:#4caf50;background:rgba(76,175,80,.08)}",
-      ".podkop-subscription-server-card-loading{opacity:.65;pointer-events:none}",
-      ".podkop-subscription-server-name{overflow-wrap:anywhere}",
-      ".podkop-subscription-server-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#777}",
-      ".podkop-subscription-latency-empty{color:#777}",
-      ".podkop-subscription-latency-green{color:#4caf50}",
-      ".podkop-subscription-latency-yellow{color:#ff9800}",
-      ".podkop-subscription-latency-red{color:#f44336}",
-    ].join("\n")),
-    E("div", { class: "podkop-subscription-title" }, [
-      E("strong", {}, [
-        i18n("Subscription servers", "Серверы подписки"),
-        `: ${links.length}`,
-      ]),
-      E(
-        "button",
-        {
-          class: "btn cbi-button",
-          type: "button",
-          click: (ev) => pingSubscriptionServers(sectionId, ev.currentTarget),
-        },
-        [i18n("Ping all", "Пинг всех")],
-      ),
-    ]),
-    E(
-      "div",
-      { class: "podkop-subscription-grid" },
-      links.map((link, index) => {
-        const active = link === selectedLink;
-        return E(
-          "div",
-          {
-            class: `podkop-subscription-server-card ${active ? "podkop-subscription-server-card-active" : ""}`,
-            "data-section-id": sectionId,
-            "data-server-index": String(index + 1),
-            click: (ev) => applySubscriptionServer(sectionId, link, ev.currentTarget),
-          },
-          [
-            E("b", { class: "podkop-subscription-server-name" }, [
-              getProxyLinkName(link),
-            ]),
-            E("div", { class: "podkop-subscription-server-footer" }, [
-              E("span", {}, [getProxyLinkScheme(link)]),
-              E(
-                "span",
-                {
-                  class: "podkop-subscription-latency podkop-subscription-latency-empty",
-                },
-                ["N/A"],
-              ),
-            ]),
-          ],
-        );
-      }),
-    ),
-  ]);
 }
 
 function loadSubscriptionServers(sectionId, button) {
@@ -582,23 +337,33 @@ function createSectionContent(section) {
     return legacyUrl ? [legacyUrl] : [];
   };
   o.validate = function (section_id, value) {
-    if (!value || value.length === 0) {
-      return i18n("Subscription URL is required", "Укажите URL подписки");
-    }
+    const urls = Array.isArray(value) ? value : [value];
 
-    const validation = main.validateUrl(value);
-    if (!validation.valid) {
-      return validation.message;
-    }
+    for (const item of urls) {
+      const url = String(item || "").trim();
 
-    if (!getActiveSubscriptionLink(section_id)) {
-      return i18n(
-        "Select one subscription server before Save & Apply.",
-        "Выберите один сервер подписки перед Save & Apply.",
-      );
+      if (!url) {
+        continue;
+      }
+
+      const validation = main.validateUrl(url);
+      if (!validation.valid) {
+        return validation.message;
+      }
     }
 
     return true;
+  };
+  o.write = function (section_id, value) {
+    const urls = Array.from(new Set(normalizeValues(value)));
+
+    uci.unset("podkop", section_id, "subscription_url");
+
+    if (urls.length) {
+      uci.set("podkop", section_id, "subscription_urls", urls);
+    } else {
+      uci.unset("podkop", section_id, "subscription_urls");
+    }
   };
 
   o = section.option(
@@ -654,17 +419,6 @@ function createSectionContent(section) {
       },
       [i18n("Update server list", "Обновить список серверов")],
     );
-  };
-
-  o = section.option(
-    form.DummyValue,
-    "_subscription_servers",
-    i18n("Servers", "Серверы"),
-  );
-  o.rawhtml = true;
-  o.depends("proxy_config_type", "subscription");
-  o.cfgvalue = function (section_id) {
-    return renderSubscriptionServers(section_id);
   };
 
   o = section.option(

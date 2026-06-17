@@ -1,8 +1,8 @@
 # Podkop Subscriptions Addon
 
-Дополнение для уже установленного Podkop на OpenWrt. Пакет добавляет тип конфигурации `Subscription` в секции LuCI Podkop и позволяет выбрать один сервер из одной или нескольких подписок.
+Дополнение для уже установленного Podkop на OpenWrt. Пакет добавляет тип конфигурации `Subscription` в секции LuCI Podkop и отдельный список серверов подписки в Dashboard.
 
-В секции можно вставить URL подписок, обновить список серверов и выбрать нужный сервер карточкой. Addon хранит список подписки отдельно от штатного selector Podkop:
+В секции можно вставить URL подписок и обновить кэш серверов. Выбор сервера выполняется в Dashboard. Addon хранит список подписки отдельно от штатного selector Podkop:
 
 - `connection_type=proxy`
 - `proxy_config_type=selector`
@@ -10,7 +10,7 @@
 - `subscription_proxy_links=<cached subscription proxy links>`
 - `selector_proxy_links=<one selected proxy link>`
 
-При обновлении списка весь каталог подписки не добавляется в `selector_proxy_links`, поэтому Dashboard Podkop не должен зависать на больших подписках. В selector записывается только сервер, выбранный пользователем.
+При обновлении списка весь каталог подписки не добавляется в `selector_proxy_links`, поэтому штатный selector Podkop не раздувается. В selector записывается только сервер, выбранный пользователем в Dashboard.
 
 ## Поддерживаемые подписки
 
@@ -60,12 +60,13 @@ wget -O - https://cdn.jsdelivr.net/gh/asv-debug/Podkop_SUB@main/install.sh | sh
 4. Оставьте `User-Agent` в режиме автоопределения или выберите нужный клиент вручную.
 5. Укажите лимит серверов. По умолчанию в кэш выбора загружается 30 серверов суммарно.
 6. Нажмите `Обновить список серверов`.
-7. Нажмите `Пинг всех`, если нужно проверить доступность серверов.
-8. Выберите один сервер кликом по карточке. Только этот сервер будет записан в `selector_proxy_links` и применён в Podkop.
+7. Откройте `Dashboard`.
+8. В блоке подписки нажмите `Пинг всех`, если нужно проверить доступность серверов.
+9. Выберите один сервер кликом по карточке. Только этот сервер будет записан в `selector_proxy_links` и применён в Podkop.
 
 ## Что делает пакет
 
-- Делает backup исходного `/www/luci-static/resources/view/podkop/section.js`.
+- Делает backup исходных `/www/luci-static/resources/view/podkop/section.js` и `/www/luci-static/resources/view/podkop/dashboard.js`.
 - Восстанавливает `/usr/bin/podkop`, `/usr/lib/podkop/helpers.sh` и `section.js` из backup, если они были изменены старыми версиями addon.
 - Восстанавливает исходный `/www/luci-static/resources/view/podkop/podkop.js`, если он был изменен версиями 0.2.x с отдельной вкладкой `Подписки`.
 - Добавляет тип `Subscription` в `Configuration Type`.

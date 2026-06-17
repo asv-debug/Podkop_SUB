@@ -8,6 +8,7 @@ BACKUP_DIR="/usr/share/podkop-subscriptions/backups"
 TARGET_PODKOP="/usr/bin/podkop"
 TARGET_HELPERS="/usr/lib/podkop/helpers.sh"
 TARGET_SECTION="/www/luci-static/resources/view/podkop/section.js"
+TARGET_DASHBOARD="/www/luci-static/resources/view/podkop/dashboard.js"
 TARGET_PODKOP_JS="/www/luci-static/resources/view/podkop/podkop.js"
 TARGET_SUBSCRIPTIONS_JS="/www/luci-static/resources/view/podkop/subscriptions.js"
 TARGET_CLI="/usr/bin/podkop-subscriptions"
@@ -93,6 +94,7 @@ apply_addon() {
     [ -x "$TARGET_PODKOP" ] || fail "Podkop is not installed: $TARGET_PODKOP"
     [ -f "$TARGET_HELPERS" ] || fail "Podkop helpers not found: $TARGET_HELPERS"
     [ -f "$TARGET_SECTION" ] || fail "luci-app-podkop section not found: $TARGET_SECTION"
+    [ -f "$TARGET_DASHBOARD" ] || fail "luci-app-podkop dashboard not found: $TARGET_DASHBOARD"
     [ -f "$TARGET_PODKOP_JS" ] || fail "luci-app-podkop main view not found: $TARGET_PODKOP_JS"
 
     restore_file_if_backup "$TARGET_PODKOP" "podkop.orig" "755"
@@ -101,6 +103,7 @@ apply_addon() {
     remove_old_subscription_cron_jobs
 
     apply_file "$PAYLOAD_DIR/section.js" "$TARGET_SECTION" "section.js.orig" "644"
+    apply_file "$PAYLOAD_DIR/dashboard.js" "$TARGET_DASHBOARD" "dashboard.js.orig" "644"
     rm -f "$TARGET_SUBSCRIPTIONS_JS"
 
     if [ -x "$TARGET_CLI" ]; then
@@ -117,6 +120,7 @@ restore_addon() {
     restore_file "$TARGET_PODKOP" "podkop.orig" "755"
     restore_file "$TARGET_HELPERS" "helpers.sh.orig" "644"
     restore_file "$TARGET_SECTION" "section.js.orig" "644"
+    restore_file "$TARGET_DASHBOARD" "dashboard.js.orig" "644"
     restore_file "$TARGET_PODKOP_JS" "podkop.js.orig" "644"
     rm -f "$TARGET_SUBSCRIPTIONS_JS"
     rm -f "$TARGET_CLI" "$TARGET_ACL"

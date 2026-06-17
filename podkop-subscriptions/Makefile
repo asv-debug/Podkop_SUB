@@ -47,6 +47,7 @@ define Package/podkop-subscriptions/install
 
 	$(INSTALL_DIR) $(1)/usr/share/podkop-subscriptions/payload
 	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/section.js $(1)/usr/share/podkop-subscriptions/payload/section.js
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/dashboard.js $(1)/usr/share/podkop-subscriptions/payload/dashboard.js
 
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/podkop-subscriptions $(1)/usr/bin/podkop-subscriptions
