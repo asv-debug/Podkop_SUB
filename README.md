@@ -1,14 +1,14 @@
 # Podkop Subscriptions Addon
 
-Дополнение для уже установленного Podkop на OpenWrt. Пакет добавляет отдельную вкладку `Подписки` в LuCI Podkop и не меняет логику запуска Podkop/Sing-box.
+Дополнение для уже установленного Podkop на OpenWrt. Пакет добавляет тип конфигурации `Subscription` в секции LuCI Podkop и использует штатный Dashboard Podkop для выбора сервера.
 
-Во вкладке можно вставить URL подписки, загрузить список серверов, проверить ping хоста и выбрать нужный сервер. Выбранный сервер сохраняется в выбранную секцию Podkop как обычная proxy-ссылка:
+В секции можно вставить URL подписки и загрузить серверы в Dashboard. Addon сохраняет серверы как штатный selector Podkop:
 
 - `connection_type=proxy`
-- `proxy_config_type=url`
-- `proxy_string=<selected proxy link>`
+- `proxy_config_type=selector`
+- `selector_proxy_links=<imported proxy links>`
 
-Так Podkop продолжает работать штатно: если подписка временно недоступна или провайдер отдает неподдержанный формат, запуск Podkop не ломается.
+После импорта Podkop применяется автоматически. Дальше сервер выбирается карточкой в Dashboard без перезапуска Podkop, через существующий sing-box selector API. Кнопка ping для всей группы серверов также находится в Dashboard.
 
 ## Поддерживаемые подписки
 
@@ -43,7 +43,7 @@ wget -O - https://raw.githubusercontent.com/asv-debug/Podkop_SUB/main/install.sh
 wget -O - https://cdn.jsdelivr.net/gh/asv-debug/Podkop_SUB@main/install.sh | sh
 ```
 
-После установки откройте LuCI: `Services -> Podkop -> Подписки`.
+После установки откройте LuCI: `Services -> Podkop -> Sections`.
 
 Установщик сначала пробует стабильный URL последнего релиза:
 
@@ -52,27 +52,24 @@ wget -O - https://cdn.jsdelivr.net/gh/asv-debug/Podkop_SUB@main/install.sh | sh
 
 ## Как пользоваться
 
-1. Выберите секцию Podkop, куда нужно сохранить сервер.
-2. Вставьте URL подписки.
-3. Оставьте `User-Agent` в режиме автоопределения или выберите нужный клиент вручную.
-4. Нажмите `Загрузить серверы`.
-5. При необходимости нажмите `Проверить` в колонке `Пинг`.
-6. Нажмите `Выбрать` у нужного сервера.
-7. Перезапустите Podkop:
-
-```sh
-/etc/init.d/podkop restart
-```
+1. В нужной секции выберите `Connection Type: Proxy`.
+2. Выберите `Configuration Type: Subscription`.
+3. Вставьте URL подписки.
+4. Оставьте `User-Agent` в режиме автоопределения или выберите нужный клиент вручную.
+5. Нажмите `Загрузить в Dashboard`.
+6. Откройте `Dashboard`, нажмите `Ping/Test latency` для проверки всех серверов секции.
+7. Выберите сервер кликом по карточке.
 
 ## Что делает пакет
 
-- Делает backup исходного `/www/luci-static/resources/view/podkop/podkop.js`.
+- Делает backup исходного `/www/luci-static/resources/view/podkop/section.js`.
 - Восстанавливает `/usr/bin/podkop`, `/usr/lib/podkop/helpers.sh` и `section.js` из backup, если они были изменены старыми версиями addon.
-- Добавляет `/www/luci-static/resources/view/podkop/subscriptions.js`.
+- Восстанавливает исходный `/www/luci-static/resources/view/podkop/podkop.js`, если он был изменен версиями 0.2.x с отдельной вкладкой `Подписки`.
+- Добавляет тип `Subscription` в `Configuration Type`.
 - Устанавливает `/usr/bin/podkop-subscriptions`.
 - Добавляет ACL для LuCI/rpcd.
 - Удаляет старые cron-задания `podkop-subscription-update-*`, если они остались от версий 0.1.x.
-- Не заменяет весь Podkop и не трогает текущий `/etc/config/podkop`, пока вы сами не выбрали сервер.
+- Не заменяет весь Podkop и меняет только выбранную секцию при нажатии `Загрузить в Dashboard`.
 
 ## Удаление
 

@@ -459,23 +459,20 @@ remove_old_subscription_cron_jobs() {
     rm -f "$tmpfile"
 }
 
-list_servers() {
+load_subscription_links() {
     local url="$1"
     local user_agent="${2:-auto}"
     local limit="${3:-100}"
-    local merged_tmpfile output_file ua imported count index link scheme host port name
+    local output_file="$4"
+    local merged_tmpfile ua imported limited_tmpfile
 
-    [ -n "$url" ] || {
-        json_error "Subscription URL is required"
-        return 1
-    }
+    [ -n "$url" ] || return 1
 
     case "$limit" in
     '' | *[!0-9]*) limit=100 ;;
     esac
 
     merged_tmpfile="$(mktemp)"
-    output_file="$(mktemp)"
     : > "$merged_tmpfile"
 
     imported=1
@@ -505,8 +502,7 @@ list_servers() {
     fi
 
     if [ ! -s "$merged_tmpfile" ]; then
-        rm -f "$merged_tmpfile" "$output_file"
-        json_error "No supported proxy links found in subscription"
+        rm -f "$merged_tmpfile"
         return 1
     fi
 
@@ -517,6 +513,27 @@ list_servers() {
         limited_tmpfile="$(mktemp)"
         head -n "$limit" "$output_file" > "$limited_tmpfile"
         mv "$limited_tmpfile" "$output_file"
+    fi
+
+    [ -s "$output_file" ]
+}
+
+list_servers() {
+    local url="$1"
+    local user_agent="${2:-auto}"
+    local limit="${3:-100}"
+    local output_file count index link scheme host port name
+
+    [ -n "$url" ] || {
+        json_error "Subscription URL is required"
+        return 1
+    }
+
+    output_file="$(mktemp)"
+    if ! load_subscription_links "$url" "$user_agent" "$limit" "$output_file"; then
+        rm -f "$output_file"
+        json_error "No supported proxy links found in subscription"
+        return 1
     fi
 
     count="$(wc -l < "$output_file" | tr -d ' ')"
@@ -548,6 +565,75 @@ list_servers() {
 
     printf ']}\n'
     rm -f "$output_file"
+}
+
+sync_subscription() {
+    local section="$1"
+    local url="$2"
+    local user_agent="${3:-auto}"
+    local limit="${4:-100}"
+    local output_file count link restart_output
+
+    [ -n "$section" ] || {
+        json_error "Podkop section is required"
+        return 1
+    }
+
+    [ -n "$url" ] || {
+        json_error "Subscription URL is required"
+        return 1
+    }
+
+    if ! uci -q show "podkop.$section" > /dev/null 2>&1; then
+        json_error "Podkop section does not exist"
+        return 1
+    fi
+
+    case "$limit" in
+    '' | *[!0-9]*) limit=100 ;;
+    esac
+
+    output_file="$(mktemp)"
+    if ! load_subscription_links "$url" "$user_agent" "$limit" "$output_file"; then
+        rm -f "$output_file"
+        json_error "No supported proxy links found in subscription"
+        return 1
+    fi
+
+    count="$(wc -l < "$output_file" | tr -d ' ')"
+
+    uci set "podkop.$section.connection_type=proxy"
+    uci set "podkop.$section.proxy_config_type=selector"
+    uci set "podkop.$section.subscription_url=$url"
+    uci set "podkop.$section.subscription_user_agent=$user_agent"
+    uci set "podkop.$section.subscription_max_servers=$limit"
+    uci -q delete "podkop.$section.selector_proxy_links"
+    uci -q delete "podkop.$section.proxy_string"
+    uci -q delete "podkop.$section.outbound_json"
+    uci -q delete "podkop.$section.urltest_proxy_links"
+    uci -q delete "podkop.$section.urltest_check_interval"
+    uci -q delete "podkop.$section.urltest_tolerance"
+    uci -q delete "podkop.$section.urltest_testing_url"
+    uci -q delete "podkop.$section.subscription_content"
+
+    while IFS= read -r link; do
+        [ -n "$link" ] && uci add_list "podkop.$section.selector_proxy_links=$link"
+    done < "$output_file"
+
+    rm -f "$output_file"
+    remove_old_subscription_cron_jobs
+
+    uci commit podkop || {
+        json_error "Failed to save Podkop configuration"
+        return 1
+    }
+
+    restart_output="$(/etc/init.d/podkop restart 2>&1)" || {
+        json_error "Failed to apply Podkop configuration: $restart_output"
+        return 1
+    }
+
+    printf '{"success":true,"count":%s}\n' "$count"
 }
 
 apply_server() {
@@ -623,6 +709,9 @@ case "${1:-}" in
 list)
     list_servers "${2:-}" "${3:-auto}" "${4:-100}"
     ;;
+sync)
+    sync_subscription "${2:-}" "${3:-}" "${4:-auto}" "${5:-100}"
+    ;;
 apply)
     apply_server "${2:-}" "${3:-}"
     ;;
@@ -630,7 +719,7 @@ ping)
     ping_server "${2:-}"
     ;;
 *)
-    json_error "Usage: podkop-subscriptions {list URL [USER_AGENT] [LIMIT]|apply SECTION LINK|ping LINK}"
+    json_error "Usage: podkop-subscriptions {list URL [USER_AGENT] [LIMIT]|sync SECTION URL [USER_AGENT] [LIMIT]|apply SECTION LINK|ping LINK}"
     exit 1
     ;;
 esac

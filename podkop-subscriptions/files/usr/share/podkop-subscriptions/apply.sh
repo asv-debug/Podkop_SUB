@@ -77,17 +77,6 @@ restore_file_if_backup() {
     fi
 }
 
-install_new_file() {
-    local payload="$1"
-    local target="$2"
-    local mode="$3"
-
-    [ -f "$payload" ] || fail "payload file not found: $payload"
-    mkdir -p "${target%/*}"
-    cp "$payload" "$target" || fail "failed to install $target"
-    chmod "$mode" "$target" || true
-}
-
 remove_old_subscription_cron_jobs() {
     local tmpfile
 
@@ -108,11 +97,11 @@ apply_addon() {
 
     restore_file_if_backup "$TARGET_PODKOP" "podkop.orig" "755"
     restore_file_if_backup "$TARGET_HELPERS" "helpers.sh.orig" "644"
-    restore_file_if_backup "$TARGET_SECTION" "section.js.orig" "644"
+    restore_file_if_backup "$TARGET_PODKOP_JS" "podkop.js.orig" "644"
     remove_old_subscription_cron_jobs
 
-    apply_file "$PAYLOAD_DIR/podkop.js" "$TARGET_PODKOP_JS" "podkop.js.orig" "644"
-    install_new_file "$PAYLOAD_DIR/subscriptions.js" "$TARGET_SUBSCRIPTIONS_JS" "644"
+    apply_file "$PAYLOAD_DIR/section.js" "$TARGET_SECTION" "section.js.orig" "644"
+    rm -f "$TARGET_SUBSCRIPTIONS_JS"
 
     if [ -x "$TARGET_CLI" ]; then
         log "$TARGET_CLI already installed"
@@ -121,7 +110,7 @@ apply_addon() {
     [ -f "$TARGET_ACL" ] || fail "Podkop subscription ACL is not installed: $TARGET_ACL"
 
     clear_luci_cache
-    log "subscription importer tab applied"
+    log "subscription configuration type applied"
 }
 
 restore_addon() {

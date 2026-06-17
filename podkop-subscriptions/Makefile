@@ -18,7 +18,7 @@ define Package/podkop-subscriptions
 endef
 
 define Package/podkop-subscriptions/description
-	Adds a LuCI subscription importer tab to an existing Podkop installation.
+	Adds a LuCI subscription configuration type to an existing Podkop installation.
 endef
 
 define Build/Configure
@@ -46,8 +46,7 @@ define Package/podkop-subscriptions/install
 	$(INSTALL_BIN) ./files/usr/share/podkop-subscriptions/apply.sh $(1)/usr/share/podkop-subscriptions/apply.sh
 
 	$(INSTALL_DIR) $(1)/usr/share/podkop-subscriptions/payload
-	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/podkop.js $(1)/usr/share/podkop-subscriptions/payload/podkop.js
-	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/subscriptions.js $(1)/usr/share/podkop-subscriptions/payload/subscriptions.js
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/section.js $(1)/usr/share/podkop-subscriptions/payload/section.js
 
 	$(INSTALL_DIR) $(1)/usr/bin
 	$(INSTALL_BIN) ./files/usr/bin/podkop-subscriptions $(1)/usr/bin/podkop-subscriptions
