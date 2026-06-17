@@ -78,24 +78,25 @@ check_requirements() {
     if has_outbound_section; then
         log "Outbound section found" "debug"
     else
-        log "Outbound section not found. Please check your configuration file (missing proxy_string, selector_proxy_links, urltest_proxy_links, outbound_json, or interface). Aborted." "error"
+        log "Outbound section not found. Please check your configuration file (missing proxy_string, subscription_urls, subscription_content, selector_proxy_links, urltest_proxy_links, outbound_json, or interface). Aborted." "error"
         exit 1
     fi
 }
 
 _check_outbound_section() {
     local section="$1"
-    local proxy_string interface outbound_json urltest_proxy_links subscription_urls
+    local proxy_string interface outbound_json urltest_proxy_links subscription_urls subscription_content
 
     config_get proxy_string "$section" "proxy_string"
     config_get selector_proxy_links "$section" "selector_proxy_links"
     config_get urltest_proxy_links "$section" "urltest_proxy_links"
     config_get subscription_urls "$section" "subscription_urls"
+    config_get subscription_content "$section" "subscription_content"
     config_get outbound_json "$section" "outbound_json"
     config_get interface "$section" "interface"
 
     if [ -n "$proxy_string" ] || [ -n "$selector_proxy_links" ] || [ -n "$urltest_proxy_links" ] ||
-        [ -n "$subscription_urls" ] || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
+        [ -n "$subscription_urls" ] || [ -n "$subscription_content" ] || [ -n "$outbound_json" ] || [ -n "$interface" ]; then
         section_exists=0
     fi
 }
@@ -1488,17 +1489,53 @@ try_import_subscription_url() {
     return 1
 }
 
+get_subscription_cache_file() {
+    local section="$1"
+    local safe_section
+
+    safe_section="$(printf '%s' "$section" | tr -c 'A-Za-z0-9_.-' '_')"
+    [ -n "$safe_section" ] || safe_section="default"
+
+    echo "/etc/podkop-subscriptions/cache/$safe_section.links"
+}
+
+import_subscription_content() {
+    local section="$1"
+    local subscription_content="$2"
+    local output_file="$3"
+
+    local tmpfile links_tmpfile link_count
+    tmpfile="$(mktemp)"
+    links_tmpfile="$(mktemp)"
+
+    printf '%s\n' "$subscription_content" > "$tmpfile"
+
+    if extract_proxy_links_from_subscription_file "$tmpfile" "$links_tmpfile"; then
+        link_count="$(wc -l < "$links_tmpfile" | tr -d ' ')"
+        log "Imported $link_count proxy links from Subscription Content for '$section' section"
+        cat "$links_tmpfile" >> "$output_file"
+        rm -f "$tmpfile" "$links_tmpfile"
+        return 0
+    fi
+
+    rm -f "$tmpfile" "$links_tmpfile"
+    return 1
+}
+
 prepare_subscription_proxy_links() {
     local section="$1"
     local output_file="$2"
 
-    local subscription_urls subscription_max_servers subscription_user_agent
+    local subscription_urls subscription_content subscription_max_servers subscription_user_agent cache_file
     config_get subscription_urls "$section" "subscription_urls"
+    config_get subscription_content "$section" "subscription_content"
     config_get subscription_max_servers "$section" "subscription_max_servers" "50"
     config_get subscription_user_agent "$section" "subscription_user_agent"
 
-    if [ -z "$subscription_urls" ]; then
-        log "Subscription URLs are not set for '$section' section" "error"
+    cache_file="$(get_subscription_cache_file "$section")"
+
+    if [ -z "$subscription_urls" ] && [ -z "$subscription_content" ] && [ ! -s "$cache_file" ]; then
+        log "Subscription URLs and Subscription Content are not set for '$section' section" "error"
         return 1
     fi
 
@@ -1512,6 +1549,12 @@ prepare_subscription_proxy_links() {
     local merged_tmpfile
     merged_tmpfile="$(mktemp)"
     : > "$merged_tmpfile"
+
+    if [ -n "$subscription_content" ]; then
+        if ! import_subscription_content "$section" "$subscription_content" "$merged_tmpfile"; then
+            log "No supported proxy links found in Subscription Content for '$section' section" "error"
+        fi
+    fi
 
     local url user_agent imported
     for url in $subscription_urls; do
@@ -1547,9 +1590,18 @@ prepare_subscription_proxy_links() {
     done
 
     if [ ! -s "$merged_tmpfile" ]; then
-        log "No proxy links were imported from subscriptions for '$section' section" "error"
-        rm -f "$merged_tmpfile"
-        return 1
+        if [ -s "$cache_file" ]; then
+            cp "$cache_file" "$merged_tmpfile" || {
+                log "Subscription cache exists but cannot be read for '$section' section: $cache_file" "error"
+                rm -f "$merged_tmpfile"
+                return 1
+            }
+            log "Fresh subscription import failed for '$section' section, using cached proxy links from $cache_file" "warn"
+        else
+            log "No proxy links were imported from subscriptions for '$section' section" "error"
+            rm -f "$merged_tmpfile"
+            return 1
+        fi
     fi
 
     awk '!seen[$0]++' "$merged_tmpfile" > "$output_file"
@@ -1565,6 +1617,22 @@ prepare_subscription_proxy_links() {
         mv "$limited_tmpfile" "$output_file"
         log "Subscription server list truncated from $count to $subscription_max_servers servers" "warn"
         count="$subscription_max_servers"
+    fi
+
+    if [ -s "$output_file" ]; then
+        local cache_dir
+        cache_dir="${cache_file%/*}"
+        if mkdir -p "$cache_dir" && cp "$output_file" "$cache_file"; then
+            chmod 600 "$cache_file" 2> /dev/null || true
+            log "Subscription cache updated for '$section' section: $cache_file" "debug"
+        else
+            log "Failed to update subscription cache for '$section' section: $cache_file" "warn"
+        fi
+    fi
+
+    if [ ! -s "$output_file" ]; then
+        log "No proxy links were imported from subscriptions for '$section' section" "error"
+        return 1
     fi
 
     log "Prepared $count subscription proxy links for '$section' section"
@@ -2136,6 +2204,7 @@ show_config() {
         sed -e 's/\(option proxy_string\).*/\1 '\''MASKED'\''/g' \
             -e '/option outbound_json/,/^}/c\	option outbound_json '\''MASKED'\''' \
             -e 's/\(list subscription_urls\).*/\1 '\''MASKED'\''/g' \
+            -e 's/\(option subscription_content\).*/\1 '\''MASKED'\''/g' \
             -e 's/\(list urltest_proxy_links\).*/\1 '\''MASKED'\''/g' \
             -e 's/\(list selector_proxy_links\).*/\1 '\''MASKED'\''/g' \
         -e "s@\\(option dns_server '[^/]*\\)/[^']*'@\\1/MASKED'@g" \

@@ -65,11 +65,11 @@ function createSectionContent(section) {
     "subscription_urls",
     _("Subscription URLs"),
     _(
-      "HTTP/HTTPS subscription URLs with vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links",
+      "HTTP/HTTPS subscription URLs with vless://, ss://, trojan://, socks4/5://, hy2/hysteria2:// links. Optional if Subscription Content is filled",
     ),
   );
   o.depends("proxy_config_type", "subscription");
-  o.rmempty = false;
+  o.rmempty = true;
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return true;
@@ -124,6 +124,20 @@ function createSectionContent(section) {
   );
   o.placeholder = "Happ/1.0";
   o.depends("proxy_config_type", "subscription");
+
+  o = section.option(
+    form.TextValue,
+    "subscription_content",
+    _("Subscription Content"),
+    _(
+      "Optional fallback. Paste the subscription response or proxy links when the router cannot download the subscription URL directly",
+    ),
+  );
+  o.depends("proxy_config_type", "subscription");
+  o.rows = 8;
+  o.wrap = "soft";
+  o.textarea = true;
+  o.rmempty = true;
 
   o = section.option(
     form.ListValue,
