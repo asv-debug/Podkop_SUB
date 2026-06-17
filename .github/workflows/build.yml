@@ -89,6 +89,12 @@ jobs:
           name: release-files-${{ github.ref_name }}-apk
           path: ./filtered-bin/release
 
+      - name: Create stable asset names
+        shell: bash
+        run: |
+          cp ./filtered-bin/release/podkop-subscriptions*.ipk ./filtered-bin/release/podkop-subscriptions.ipk
+          cp ./filtered-bin/release/podkop-subscriptions*.apk ./filtered-bin/release/podkop-subscriptions.apk
+
       - name: Release
         uses: softprops/action-gh-release@v2.4.0
         with:
@@ -97,4 +103,3 @@ jobs:
           prerelease: false
           name: ${{ github.ref_name }}
           tag_name: ${{ github.ref_name }}
-

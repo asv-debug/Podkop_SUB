@@ -1,6 +1,7 @@
 #!/bin/sh
 
 REPO="https://api.github.com/repos/asv-debug/Podkop_SUB/releases/latest"
+LATEST_DOWNLOAD_BASE="https://github.com/asv-debug/Podkop_SUB/releases/latest/download"
 DOWNLOAD_DIR="/tmp/podkop-subscriptions"
 PKG_NAME="podkop-subscriptions"
 COUNT=3
@@ -46,6 +47,26 @@ pkg_install() {
     fi
 }
 
+download_file() {
+    local url="$1"
+    local filepath="$2"
+    local filename="$3"
+    local attempt
+
+    attempt=0
+    while [ "$attempt" -lt "$COUNT" ]; do
+        msg "Download $filename (attempt $((attempt + 1))/$COUNT)..."
+        if wget -q -O "$filepath" "$url" && [ -s "$filepath" ]; then
+            return 0
+        fi
+        rm -f "$filepath"
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+
+    return 1
+}
+
 main() {
     check_podkop_installed
 
@@ -61,29 +82,26 @@ main() {
 
     grep_url_pattern="https://[^\"[:space:]]*${PKG_NAME}[^\"[:space:]]*\\.${extension}"
 
-    local urls
-    urls="$(wget -qO- "$REPO" | grep -o "$grep_url_pattern")"
-    [ -n "$urls" ] || fail "No ${PKG_NAME}.${extension} asset found in latest release"
+    local stable_filename stable_filepath stable_url filename filepath
+    stable_filename="${PKG_NAME}.${extension}"
+    stable_filepath="$DOWNLOAD_DIR/$stable_filename"
+    stable_url="$LATEST_DOWNLOAD_BASE/$stable_filename"
 
-    local url
-    url="$(printf "%s\n" "$urls" | head -n 1)"
+    if ! download_file "$stable_url" "$stable_filepath" "$stable_filename"; then
+        local urls
+        urls="$(wget -qO- "$REPO" | grep -o "$grep_url_pattern")"
+        [ -n "$urls" ] || fail "No ${PKG_NAME}.${extension} asset found in latest release"
 
-    local filename filepath attempt
-    filename="$(basename "$url")"
-    filepath="$DOWNLOAD_DIR/$filename"
+        local url
+        url="$(printf "%s\n" "$urls" | head -n 1)"
+        filename="$(basename "$url")"
+        filepath="$DOWNLOAD_DIR/$filename"
 
-    attempt=0
-    while [ "$attempt" -lt "$COUNT" ]; do
-        msg "Download $filename (attempt $((attempt + 1))/$COUNT)..."
-        if wget -q -O "$filepath" "$url" && [ -s "$filepath" ]; then
-            break
-        fi
-        rm -f "$filepath"
-        attempt=$((attempt + 1))
-        sleep 2
-    done
-
-    [ -s "$filepath" ] || fail "Failed to download $filename"
+        download_file "$url" "$filepath" "$filename" || fail "Failed to download $filename"
+    else
+        filename="$stable_filename"
+        filepath="$stable_filepath"
+    fi
 
     msg "Installing $filename..."
     pkg_install "$filepath" || fail "Failed to install $filename"

@@ -45,6 +45,11 @@ wget -O - https://cdn.jsdelivr.net/gh/asv-debug/Podkop_SUB@main/install.sh | sh
 
 После установки откройте LuCI: `Services -> Podkop -> Подписки`.
 
+Установщик сначала пробует стабильный URL последнего релиза:
+
+- `https://github.com/asv-debug/Podkop_SUB/releases/latest/download/podkop-subscriptions.ipk`
+- `https://github.com/asv-debug/Podkop_SUB/releases/latest/download/podkop-subscriptions.apk`
+
 ## Как пользоваться
 
 1. Выберите секцию Podkop, куда нужно сохранить сервер.
