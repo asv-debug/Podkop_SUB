@@ -1,0 +1,10 @@
+FROM itdoginfo/openwrt-sdk-ipk:24.10.6
+
+ARG PODKOP_SUBSCRIPTIONS_VERSION
+
+COPY ./podkop-subscriptions /builder/package/feeds/utilities/podkop-subscriptions
+
+RUN export PODKOP_SUBSCRIPTIONS_VERSION="${PODKOP_SUBSCRIPTIONS_VERSION}" && \
+    make defconfig && \
+    make package/podkop-subscriptions/compile V=s -j4
+

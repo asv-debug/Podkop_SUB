@@ -1,0 +1,10 @@
+FROM itdoginfo/openwrt-sdk-apk:25.12.3
+
+ARG PODKOP_SUBSCRIPTIONS_VERSION
+ENV PODKOP_SUBSCRIPTIONS_VERSION=${PODKOP_SUBSCRIPTIONS_VERSION}
+
+COPY ./podkop-subscriptions /builder/package/feeds/utilities/podkop-subscriptions
+
+RUN make defconfig && \
+    make package/podkop-subscriptions/compile V=s -j4
+

@@ -1,0 +1,55 @@
+include $(TOPDIR)/rules.mk
+
+PKG_NAME:=podkop-subscriptions
+PKG_VERSION:=$(if $(PODKOP_SUBSCRIPTIONS_VERSION),$(PODKOP_SUBSCRIPTIONS_VERSION),0.$(shell date +%d%m%Y))
+PKG_RELEASE:=1
+
+PKG_MAINTAINER:=asv-debug <stars.02akimenko@mail.ru>
+PKG_LICENSE:=GPL-2.0-or-later
+
+include $(INCLUDE_DIR)/package.mk
+
+define Package/podkop-subscriptions
+	SECTION:=net
+	CATEGORY:=Network
+	TITLE:=Podkop subscription URL addon
+	URL:=https://github.com/asv-debug/Podkop_SUB
+	PKGARCH:=all
+endef
+
+define Package/podkop-subscriptions/description
+	Adds subscription URL support to an existing Podkop installation.
+endef
+
+define Build/Configure
+endef
+
+define Build/Compile
+endef
+
+define Package/podkop-subscriptions/postinst
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] && exit 0
+/usr/share/podkop-subscriptions/apply.sh apply
+exit 0
+endef
+
+define Package/podkop-subscriptions/prerm
+#!/bin/sh
+[ -n "$$IPKG_INSTROOT" ] && exit 0
+/usr/share/podkop-subscriptions/apply.sh restore
+exit 0
+endef
+
+define Package/podkop-subscriptions/install
+	$(INSTALL_DIR) $(1)/usr/share/podkop-subscriptions
+	$(INSTALL_BIN) ./files/usr/share/podkop-subscriptions/apply.sh $(1)/usr/share/podkop-subscriptions/apply.sh
+
+	$(INSTALL_DIR) $(1)/usr/share/podkop-subscriptions/payload
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/podkop $(1)/usr/share/podkop-subscriptions/payload/podkop
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/helpers.sh $(1)/usr/share/podkop-subscriptions/payload/helpers.sh
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/section.js $(1)/usr/share/podkop-subscriptions/payload/section.js
+endef
+
+$(eval $(call BuildPackage,podkop-subscriptions))
+

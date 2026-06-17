@@ -1,0 +1,100 @@
+name: Build addon packages
+
+on:
+  push:
+    tags:
+      - '*'
+
+permissions:
+  contents: write
+
+jobs:
+  preparation:
+    name: Setup build version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v5.0.0
+      - id: version
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Builder for ${{ matrix.package_type }} podkop-subscriptions
+    runs-on: ubuntu-latest
+    needs: preparation
+    strategy:
+      matrix:
+        include:
+          - { package_type: ipk }
+          - { package_type: apk }
+    steps:
+      - uses: actions/checkout@v5.0.0
+
+      - name: Build ${{ matrix.package_type }}
+        uses: docker/build-push-action@v6.18.0
+        with:
+          file: ./Dockerfile-${{ matrix.package_type }}
+          context: .
+          tags: podkop-subscriptions:ci-${{ matrix.package_type }}
+          build-args: |
+            PODKOP_SUBSCRIPTIONS_VERSION=${{ needs.preparation.outputs.version }}
+
+      - name: Create ${{ matrix.package_type }} Docker container
+        run: docker create --name ${{ matrix.package_type }} podkop-subscriptions:ci-${{ matrix.package_type }}
+
+      - name: Copy files from ${{ matrix.package_type }} Docker container
+        run: |
+          mkdir -p ./bin/${{ matrix.package_type }}
+          docker cp ${{ matrix.package_type }}:/builder/bin/packages/x86_64/utilities/. ./bin/${{ matrix.package_type }}/
+
+      - name: Filter files
+        shell: bash
+        run: |
+          mkdir -p ./filtered-bin/${{ matrix.package_type }}
+          cp ./bin/${{ matrix.package_type }}/podkop-subscriptions*.${{ matrix.package_type }} ./filtered-bin/${{ matrix.package_type }}/
+
+      - name: Remove Docker container
+        run: docker rm ${{ matrix.package_type }}
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4.6.2
+        with:
+          name: release-files-${{ github.ref_name }}-${{ matrix.package_type }}
+          path: ./filtered-bin/${{ matrix.package_type }}/*.${{ matrix.package_type }}
+          retention-days: 1
+          if-no-files-found: error
+
+  release:
+    name: Create Release
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v5.0.0
+
+      - name: Create release dir
+        run: mkdir -p ./filtered-bin/release
+
+      - name: Download ipk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-files-${{ github.ref_name }}-ipk
+          path: ./filtered-bin/release
+
+      - name: Download apk artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: release-files-${{ github.ref_name }}-apk
+          path: ./filtered-bin/release
+
+      - name: Release
+        uses: softprops/action-gh-release@v2.4.0
+        with:
+          files: ./filtered-bin/release/*.*
+          draft: false
+          prerelease: false
+          name: ${{ github.ref_name }}
+          tag_name: ${{ github.ref_name }}
+
