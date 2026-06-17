@@ -66,7 +66,7 @@ function parseResponse(response) {
 
 function getFieldValue(sectionId, optionName, fallback) {
   const suffix = `.${sectionId}.${optionName}`;
-  const fields = Array.from(document.querySelectorAll("input, select"));
+  const fields = Array.from(document.querySelectorAll("input, select, textarea"));
   const field = fields.find((item) => {
     const id = item.getAttribute("id") || "";
     const name = item.getAttribute("name") || "";
@@ -80,12 +80,301 @@ function getFieldValue(sectionId, optionName, fallback) {
   return field.value || "";
 }
 
-function loadSubscriptionToDashboard(sectionId, button) {
-  const url = getFieldValue(
+function normalizeValues(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+
+  if (!value) {
+    return [];
+  }
+
+  return String(value)
+    .split(/\s+/)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function getFieldValues(sectionId, optionName, fallback) {
+  const suffix = `.${sectionId}.${optionName}`;
+  const fields = Array.from(document.querySelectorAll("input, select, textarea"));
+  const values = fields
+    .filter((item) => {
+      const id = item.getAttribute("id") || "";
+      const name = item.getAttribute("name") || "";
+      return id.endsWith(suffix) || name.endsWith(suffix);
+    })
+    .map((item) => String(item.value || "").trim())
+    .filter(Boolean);
+
+  if (values.length > 0) {
+    return Array.from(new Set(values));
+  }
+
+  return normalizeValues(fallback);
+}
+
+function getProxyLinkScheme(link) {
+  return String(link || "").split("://")[0] || "";
+}
+
+function getProxyLinkHost(link) {
+  const value = String(link || "");
+  const withoutScheme = value.includes("://")
+    ? value.slice(value.indexOf("://") + 3)
+    : value;
+  const withoutUser = withoutScheme.includes("@")
+    ? withoutScheme.slice(withoutScheme.lastIndexOf("@") + 1)
+    : withoutScheme;
+
+  return withoutUser.split(/[/?#]/)[0] || "";
+}
+
+function getProxyLinkName(link) {
+  const value = String(link || "");
+  const hashIndex = value.indexOf("#");
+
+  if (hashIndex >= 0 && hashIndex < value.length - 1) {
+    try {
+      return decodeURIComponent(value.slice(hashIndex + 1));
+    } catch (e) {
+      return value.slice(hashIndex + 1);
+    }
+  }
+
+  return `${getProxyLinkScheme(value)}://${getProxyLinkHost(value)}`;
+}
+
+function getSubscriptionLinks(sectionId) {
+  return normalizeValues(uci.get("podkop", sectionId, "subscription_proxy_links"));
+}
+
+function getActiveSubscriptionLink(sectionId) {
+  const selected = uci.get("podkop", sectionId, "subscription_selected_proxy_link");
+  const selectorLinks = normalizeValues(
+    uci.get("podkop", sectionId, "selector_proxy_links"),
+  );
+
+  return selected || (selectorLinks.length === 1 ? selectorLinks[0] : "") || "";
+}
+
+function getSubscriptionServerCard(sectionId, index) {
+  return Array.from(
+    document.querySelectorAll(".podkop-subscription-server-card"),
+  ).find(
+    (card) =>
+      card.getAttribute("data-section-id") === sectionId &&
+      card.getAttribute("data-server-index") === String(index),
+  );
+}
+
+function updateSubscriptionLatency(sectionId, index, latency, success) {
+  const card = getSubscriptionServerCard(sectionId, index);
+  if (!card) {
+    return;
+  }
+
+  const node = card.querySelector(".podkop-subscription-latency");
+  if (!node) {
+    return;
+  }
+
+  node.classList.remove(
+    "podkop-subscription-latency-empty",
+    "podkop-subscription-latency-green",
+    "podkop-subscription-latency-yellow",
+    "podkop-subscription-latency-red",
+  );
+
+  if (!success || !latency) {
+    node.textContent = "N/A";
+    node.classList.add("podkop-subscription-latency-empty");
+    return;
+  }
+
+  const value = Number(latency);
+  node.textContent = `${latency}ms`;
+  if (value < 800) {
+    node.classList.add("podkop-subscription-latency-green");
+  } else if (value < 1500) {
+    node.classList.add("podkop-subscription-latency-yellow");
+  } else {
+    node.classList.add("podkop-subscription-latency-red");
+  }
+}
+
+function pingSubscriptionServers(sectionId, button) {
+  const links = getSubscriptionLinks(sectionId);
+  const oldText = button ? button.textContent : "";
+
+  if (links.length === 0) {
+    ui.addNotification(
+      null,
+      E("p", {}, [
+        i18n("Load subscription servers first.", "Сначала обновите список серверов."),
+      ]),
+      "warning",
+    );
+    return Promise.resolve();
+  }
+
+  if (button) {
+    button.disabled = true;
+    button.textContent = i18n("Pinging...", "Пинг...");
+  }
+
+  return fs
+    .exec("/usr/bin/podkop-subscriptions", ["ping-list", links.join("\n")])
+    .then((response) => {
+      const payload = parseResponse(response);
+      if (!payload.success) {
+        throw new Error(payload.error || response.stderr || "ping failed");
+      }
+
+      (payload.results || []).forEach((result) => {
+        updateSubscriptionLatency(
+          sectionId,
+          result.index,
+          result.latency_ms,
+          result.success,
+        );
+      });
+    })
+    .catch((error) => {
+      ui.addNotification(
+        null,
+        E("p", {}, [String(error.message || error)]),
+        "danger",
+      );
+    })
+    .finally(() => {
+      if (button) {
+        button.disabled = false;
+        button.textContent = oldText;
+      }
+    });
+}
+
+function applySubscriptionServer(sectionId, link, card) {
+  if (card) {
+    card.classList.add("podkop-subscription-server-card-loading");
+  }
+
+  return fs
+    .exec("/usr/bin/podkop-subscriptions", ["apply", sectionId, link])
+    .then((response) => {
+      const payload = parseResponse(response);
+      if (!payload.success) {
+        throw new Error(payload.error || response.stderr || "apply failed");
+      }
+
+      ui.addNotification(
+        null,
+        E("p", {}, [
+          i18n(
+            "Server selected and applied.",
+            "Сервер выбран и применён.",
+          ),
+        ]),
+        "info",
+      );
+
+      window.setTimeout(() => window.location.reload(), 1000);
+    })
+    .catch((error) => {
+      if (card) {
+        card.classList.remove("podkop-subscription-server-card-loading");
+      }
+      ui.addNotification(
+        null,
+        E("p", {}, [String(error.message || error)]),
+        "danger",
+      );
+    });
+}
+
+function renderSubscriptionServers(sectionId) {
+  const links = getSubscriptionLinks(sectionId);
+  const selectedLink = getActiveSubscriptionLink(sectionId);
+
+  if (links.length === 0) {
+    return E("div", { class: "podkop-subscription-empty" }, [
+      i18n("No loaded servers.", "Нет загруженных серверов."),
+    ]);
+  }
+
+  return E("div", { class: "podkop-subscription-server-list" }, [
+    E("style", {}, [
+      ".podkop-subscription-server-list{display:flex;flex-direction:column;gap:12px}",
+      ".podkop-subscription-title{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}",
+      ".podkop-subscription-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px}",
+      ".podkop-subscription-server-card{border:1px solid rgba(127,127,127,.35);border-radius:8px;padding:12px;cursor:pointer;min-height:72px;display:flex;flex-direction:column;justify-content:space-between;gap:10px;background:rgba(127,127,127,.06)}",
+      ".podkop-subscription-server-card:hover{border-color:#4a90e2}",
+      ".podkop-subscription-server-card-active{border-color:#4caf50;background:rgba(76,175,80,.08)}",
+      ".podkop-subscription-server-card-loading{opacity:.65;pointer-events:none}",
+      ".podkop-subscription-server-name{overflow-wrap:anywhere}",
+      ".podkop-subscription-server-footer{display:flex;align-items:center;justify-content:space-between;gap:8px;color:#777}",
+      ".podkop-subscription-latency-empty{color:#777}",
+      ".podkop-subscription-latency-green{color:#4caf50}",
+      ".podkop-subscription-latency-yellow{color:#ff9800}",
+      ".podkop-subscription-latency-red{color:#f44336}",
+    ].join("\n")),
+    E("div", { class: "podkop-subscription-title" }, [
+      E("strong", {}, [
+        i18n("Subscription servers", "Серверы подписки"),
+        `: ${links.length}`,
+      ]),
+      E(
+        "button",
+        {
+          class: "btn cbi-button",
+          type: "button",
+          click: (ev) => pingSubscriptionServers(sectionId, ev.currentTarget),
+        },
+        [i18n("Ping all", "Пинг всех")],
+      ),
+    ]),
+    E(
+      "div",
+      { class: "podkop-subscription-grid" },
+      links.map((link, index) => {
+        const active = link === selectedLink;
+        return E(
+          "div",
+          {
+            class: `podkop-subscription-server-card ${active ? "podkop-subscription-server-card-active" : ""}`,
+            "data-section-id": sectionId,
+            "data-server-index": String(index + 1),
+            click: (ev) => applySubscriptionServer(sectionId, link, ev.currentTarget),
+          },
+          [
+            E("b", { class: "podkop-subscription-server-name" }, [
+              getProxyLinkName(link),
+            ]),
+            E("div", { class: "podkop-subscription-server-footer" }, [
+              E("span", {}, [getProxyLinkScheme(link)]),
+              E(
+                "span",
+                {
+                  class: "podkop-subscription-latency podkop-subscription-latency-empty",
+                },
+                ["N/A"],
+              ),
+            ]),
+          ],
+        );
+      }),
+    ),
+  ]);
+}
+
+function loadSubscriptionServers(sectionId, button) {
+  const subscriptionUrls = getFieldValues(
     sectionId,
-    "subscription_url",
-    uci.get("podkop", sectionId, "subscription_url"),
-  ).trim();
+    "subscription_urls",
+    uci.get("podkop", sectionId, "subscription_urls") ||
+      uci.get("podkop", sectionId, "subscription_url"),
+  );
   const userAgent =
     getFieldValue(
       sectionId,
@@ -97,10 +386,10 @@ function loadSubscriptionToDashboard(sectionId, button) {
       sectionId,
       "subscription_max_servers",
       uci.get("podkop", sectionId, "subscription_max_servers"),
-    ) || "100";
+    ) || "30";
   const oldText = button ? button.textContent : "";
 
-  if (!url) {
+  if (subscriptionUrls.length === 0) {
     ui.addNotification(
       null,
       E("p", {}, [i18n("Subscription URL is required", "Укажите URL подписки")]),
@@ -118,7 +407,7 @@ function loadSubscriptionToDashboard(sectionId, button) {
     .exec("/usr/bin/podkop-subscriptions", [
       "sync",
       sectionId,
-      url,
+      subscriptionUrls.join("\n"),
       userAgent,
       limit,
     ])
@@ -131,10 +420,7 @@ function loadSubscriptionToDashboard(sectionId, button) {
       ui.addNotification(
         null,
         E("p", {}, [
-          i18n(
-            "Subscription loaded to Dashboard.",
-            "Подписка загружена в Dashboard.",
-          ),
+          `${i18n("Subscription server list updated.", "Список серверов подписки обновлён")} (${payload.count || 0})`,
         ]),
         "info",
       );
@@ -171,18 +457,14 @@ function installDashboardPingLabelPatch() {
     document
       .querySelectorAll(".dashboard-sections-grid-item-test-latency")
       .forEach((button) => {
-        button.textContent = i18n("Ping", "Пинг");
+        const label = i18n("Ping", "Пинг");
+        if (button.textContent !== label) {
+          button.textContent = label;
+        }
       });
   };
 
-  if (typeof MutationObserver !== "undefined" && document.body) {
-    new MutationObserver(applyLabel).observe(document.body, {
-      childList: true,
-      subtree: true,
-    });
-  }
-
-  window.setInterval(applyLabel, 1500);
+  window.setInterval(applyLabel, 2500);
   applyLabel();
 }
 
@@ -215,9 +497,21 @@ function createSectionContent(section) {
   o.depends("connection_type", "proxy");
   o.cfgvalue = function (section_id) {
     const value = uci.get("podkop", section_id, "proxy_config_type") || "url";
-    const subscriptionUrl = uci.get("podkop", section_id, "subscription_url");
+    const subscriptionUrls =
+      uci.get("podkop", section_id, "subscription_urls") ||
+      uci.get("podkop", section_id, "subscription_url");
+    const subscriptionLinks = uci.get(
+      "podkop",
+      section_id,
+      "subscription_proxy_links",
+    );
+    const selectedLink = uci.get(
+      "podkop",
+      section_id,
+      "subscription_selected_proxy_link",
+    );
 
-    if (value === "selector" && subscriptionUrl) {
+    if (subscriptionUrls || subscriptionLinks || selectedLink) {
       return "subscription";
     }
 
@@ -225,12 +519,17 @@ function createSectionContent(section) {
   };
   o.write = function (section_id, value) {
     if (value === "subscription") {
-      uci.set("podkop", section_id, "proxy_config_type", "selector");
+      if (getActiveSubscriptionLink(section_id)) {
+        uci.set("podkop", section_id, "proxy_config_type", "selector");
+      }
       return;
     }
 
     uci.set("podkop", section_id, "proxy_config_type", value);
     uci.unset("podkop", section_id, "subscription_url");
+    uci.unset("podkop", section_id, "subscription_urls");
+    uci.unset("podkop", section_id, "subscription_proxy_links");
+    uci.unset("podkop", section_id, "subscription_selected_proxy_link");
     uci.unset("podkop", section_id, "subscription_user_agent");
     uci.unset("podkop", section_id, "subscription_max_servers");
   };
@@ -265,12 +564,23 @@ function createSectionContent(section) {
   };
 
   o = section.option(
-    form.Value,
-    "subscription_url",
-    i18n("Subscription URL", "URL подписки"),
+    form.DynamicList,
+    "subscription_urls",
+    i18n("Subscription URLs", "URL подписок"),
   );
   o.depends("proxy_config_type", "subscription");
   o.rmempty = false;
+  o.placeholder = "https://example.com/subscription";
+  o.cfgvalue = function (section_id) {
+    const urls = uci.get("podkop", section_id, "subscription_urls");
+    const legacyUrl = uci.get("podkop", section_id, "subscription_url");
+
+    if (urls && urls.length) {
+      return urls;
+    }
+
+    return legacyUrl ? [legacyUrl] : [];
+  };
   o.validate = function (section_id, value) {
     if (!value || value.length === 0) {
       return i18n("Subscription URL is required", "Укажите URL подписки");
@@ -281,11 +591,10 @@ function createSectionContent(section) {
       return validation.message;
     }
 
-    const links = uci.get("podkop", section_id, "selector_proxy_links");
-    if (!links || links.length === 0) {
+    if (!getActiveSubscriptionLink(section_id)) {
       return i18n(
-        "Use Load to Dashboard to import servers before Save & Apply.",
-        "Нажмите Загрузить в Dashboard перед Save & Apply.",
+        "Select one subscription server before Save & Apply.",
+        "Выберите один сервер подписки перед Save & Apply.",
       );
     }
 
@@ -309,8 +618,8 @@ function createSectionContent(section) {
     "subscription_max_servers",
     i18n("Server Limit", "Лимит серверов"),
   );
-  o.default = "100";
-  o.placeholder = "100";
+  o.default = "30";
+  o.placeholder = "30";
   o.rmempty = false;
   o.depends("proxy_config_type", "subscription");
   o.validate = function (section_id, value) {
@@ -318,13 +627,13 @@ function createSectionContent(section) {
       return true;
     }
 
-    if (/^[0-9]+$/.test(value) && Number(value) >= 1 && Number(value) <= 500) {
+    if (/^[0-9]+$/.test(value) && Number(value) >= 1 && Number(value) <= 100) {
       return true;
     }
 
     return i18n(
-      "Must be a number in the range of 1 - 500",
-      "Введите число от 1 до 500",
+      "Must be a number in the range of 1 - 100",
+      "Введите число от 1 до 100",
     );
   };
 
@@ -341,10 +650,21 @@ function createSectionContent(section) {
       {
         class: "btn cbi-button cbi-button-apply",
         type: "button",
-        click: (ev) => loadSubscriptionToDashboard(section_id, ev.currentTarget),
+        click: (ev) => loadSubscriptionServers(section_id, ev.currentTarget),
       },
-      [i18n("Load to Dashboard", "Загрузить в Dashboard")],
+      [i18n("Update server list", "Обновить список серверов")],
     );
+  };
+
+  o = section.option(
+    form.DummyValue,
+    "_subscription_servers",
+    i18n("Servers", "Серверы"),
+  );
+  o.rawhtml = true;
+  o.depends("proxy_config_type", "subscription");
+  o.cfgvalue = function (section_id) {
+    return renderSubscriptionServers(section_id);
   };
 
   o = section.option(
