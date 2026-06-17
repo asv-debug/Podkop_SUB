@@ -92,6 +92,23 @@ function getProxyLinkName(link) {
   return `${getProxyLinkScheme(value)}://${getProxyLinkHost(value)}`;
 }
 
+function getSubscriptionNameFromUrl(url) {
+  const value = String(url || "").trim();
+
+  if (!value) {
+    return "";
+  }
+
+  try {
+    const parsed = new URL(value);
+    const pathname = parsed.pathname.replace(/\/$/, "");
+    const query = parsed.search && !pathname ? parsed.search : "";
+    return `${parsed.hostname}${pathname}${query}`;
+  } catch (e) {
+    return value.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "").replace(/\/$/, "");
+  }
+}
+
 function getActiveSubscriptionLink(section) {
   const selected = section.subscription_selected_proxy_link;
   const selectorLinks = normalizeValues(section.selector_proxy_links);
@@ -106,10 +123,23 @@ function getSubscriptionSections() {
     .map((section) => ({
       id: section[".name"],
       displayName: section.name || section[".name"],
+      subscriptionUrls: normalizeValues(
+        section.subscription_urls || section.subscription_url,
+      ),
       links: normalizeValues(section.subscription_proxy_links),
       selectedLink: getActiveSubscriptionLink(section),
     }))
     .filter((section) => section.links.length > 0);
+}
+
+function getSubscriptionTitle(section) {
+  const subscriptionName =
+    getSubscriptionNameFromUrl(section.subscriptionUrls[0]) ||
+    i18n("Subscription", "Подписка");
+  const suffix =
+    section.subscriptionUrls.length > 1 ? ` +${section.subscriptionUrls.length - 1}` : "";
+
+  return `${subscriptionName}${suffix} · ${section.displayName}`;
 }
 
 function getSubscriptionServerCard(sectionId, index) {
@@ -238,11 +268,18 @@ function applySubscriptionServer(sectionId, link, card) {
 
 function renderSubscriptionStyles() {
   return E("style", {}, [
-    ".podkop-subscription-dashboard{display:flex;flex-direction:column;gap:12px;margin-top:12px}",
-    ".podkop-subscription-dashboard .pdk_dashboard-page__outbound-grid__item{min-height:72px}",
-    ".podkop-subscription-dashboard-card{cursor:pointer}",
+    "#cbi-podkop-dashboard-_subscription_mount_node{width:100%}",
+    "#cbi-podkop-dashboard-_subscription_mount_node>div{width:100%}",
+    ".podkop-subscription-dashboard{display:flex;flex-direction:column;gap:12px;margin-top:12px;width:100%;--dashboard-grid-columns:4}",
+    "@media (max-width:900px){.podkop-subscription-dashboard{--dashboard-grid-columns:2}}",
+    "@media (max-width:520px){.podkop-subscription-dashboard{--dashboard-grid-columns:1}}",
+    ".podkop-subscription-dashboard .pdk_dashboard-page__outbound-section{width:100%;box-sizing:border-box}",
+    ".podkop-subscription-dashboard .pdk_dashboard-page__outbound-grid{grid-template-columns:repeat(var(--dashboard-grid-columns),minmax(0,1fr));width:100%}",
+    ".podkop-subscription-dashboard .pdk_dashboard-page__outbound-grid__item{min-height:112px;min-width:0;display:flex;flex-direction:column;justify-content:space-between;gap:10px}",
     ".podkop-subscription-dashboard-card-loading{opacity:.65;pointer-events:none}",
     ".podkop-subscription-dashboard-card-name{overflow-wrap:anywhere}",
+    ".podkop-subscription-dashboard-card-action{display:flex;align-items:center;justify-content:flex-end;margin-top:2px}",
+    ".podkop-subscription-dashboard-card-action .btn{white-space:nowrap}",
     ".podkop-subscription-dashboard-latency-empty{color:#777}",
     ".podkop-subscription-dashboard-latency-green{color:#4caf50}",
     ".podkop-subscription-dashboard-latency-yellow{color:#ff9800}",
@@ -256,10 +293,9 @@ function renderSubscriptionCard(section, link, index) {
   return E(
     "div",
     {
-      class: `pdk_dashboard-page__outbound-grid__item pdk_dashboard-page__outbound-grid__item--selectable podkop-subscription-dashboard-card ${active ? "pdk_dashboard-page__outbound-grid__item--active" : ""}`,
+      class: `pdk_dashboard-page__outbound-grid__item podkop-subscription-dashboard-card ${active ? "pdk_dashboard-page__outbound-grid__item--active" : ""}`,
       "data-section-id": section.id,
       "data-server-index": String(index + 1),
-      click: (ev) => applySubscriptionServer(section.id, link, ev.currentTarget),
     },
     [
       E("b", { class: "podkop-subscription-dashboard-card-name" }, [
@@ -278,6 +314,25 @@ function renderSubscriptionCard(section, link, index) {
           ["N/A"],
         ),
       ]),
+      E("div", { class: "podkop-subscription-dashboard-card-action" }, [
+        E(
+          "button",
+          {
+            class: "btn cbi-button cbi-button-apply",
+            type: "button",
+            disabled: active,
+            click: (ev) =>
+              applySubscriptionServer(
+                section.id,
+                link,
+                ev.currentTarget.closest(".podkop-subscription-dashboard-card"),
+              ),
+          },
+          active
+            ? i18n("Selected", "Выбран")
+            : i18n("Select server", "Выбрать сервер"),
+        ),
+      ]),
     ],
   );
 }
@@ -290,17 +345,21 @@ function renderSubscriptionSection(section) {
         {
           class: "pdk_dashboard-page__outbound-section__title-section__title",
         },
-        `${i18n("Subscription", "Подписка")}: ${section.displayName}`,
+        getSubscriptionTitle(section),
       ),
       E(
         "button",
         {
           class: "btn dashboard-sections-grid-item-test-latency",
           type: "button",
+          title: i18n(
+            "Checks latency from the router",
+            "Проверяет задержку с роутера",
+          ),
           click: (ev) =>
             pingSubscriptionServers(section.id, section.links, ev.currentTarget),
         },
-        i18n("Ping all", "Пинг всех"),
+        i18n("Ping", "Пинг"),
       ),
     ]),
     E(
