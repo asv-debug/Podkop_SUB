@@ -14,7 +14,7 @@
 
 Addon пробует несколько User-Agent для обычных client subscription endpoints: Happ, Hiddify Next, v2rayN, v2rayNG, NekoBox, Clash Meta for Android, sing-box, Shadowrocket и curl.
 
-Поддерживаются plain/base64/base64url списки, а также JSON/YAML-обертки, если внутри есть proxy-ссылки. Сейчас импортируются ссылки:
+Поддерживаются plain/base64/base64url списки, JSON/YAML-обертки с proxy-ссылками, а также Happ/v2ray JSON-конфиги, где серверы описаны через `outbounds`. Сейчас импортируются ссылки:
 
 - `vless://`
 - `ss://`

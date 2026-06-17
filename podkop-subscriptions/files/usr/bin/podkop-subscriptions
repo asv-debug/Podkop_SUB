@@ -70,6 +70,57 @@ url_strip_fragment() {
     echo "${url%%#*}"
 }
 
+url_escape_fragment() {
+    local value="$1"
+
+    printf '%s' "$value" |
+        sed \
+            -e 's/%/%25/g' \
+            -e 's/ /%20/g' \
+            -e 's/#/%23/g' \
+            -e 's/&/%26/g'
+}
+
+json_get_string_field() {
+    local json="$1"
+    local key="$2"
+
+    printf '%s' "$json" |
+        awk -v key="\"$key\"" '
+            {
+                pos = index($0, key)
+                if (!pos) {
+                    exit
+                }
+                value = substr($0, pos + length(key))
+                sub(/^[[:space:]]*:[[:space:]]*"/, "", value)
+                sub(/".*/, "", value)
+                print value
+                exit
+            }
+        '
+}
+
+json_get_number_field() {
+    local json="$1"
+    local key="$2"
+
+    printf '%s' "$json" |
+        awk -v key="\"$key\"" '
+            {
+                pos = index($0, key)
+                if (!pos) {
+                    exit
+                }
+                value = substr($0, pos + length(key))
+                sub(/^[[:space:]]*:[[:space:]]*/, "", value)
+                sub(/[^0-9].*/, "", value)
+                print value
+                exit
+            }
+        '
+}
+
 base64_decode() {
     local str="$1"
     echo "$str" | base64 -d 2> /dev/null
@@ -237,34 +288,118 @@ extract_proxy_urls_from_base64_chunks() {
         awk '!seen[$0]++' > "$output_file"
 }
 
+extract_v2ray_json_proxy_links() {
+    local input_file="$1"
+    local output_file="$2"
+    local normalized_file entry proxy_part protocol host port id encryption flow network security sni fp pbk sid path ws_host remarks query link
+
+    normalized_file="$(mktemp)"
+    tr -d '\r\n' < "$input_file" |
+        awk '{ gsub(/\},[[:space:]]*\{"dns"/, "}\n{\"dns\""); print }' > "$normalized_file"
+
+    : > "$output_file"
+
+    while IFS= read -r entry; do
+        case "$entry" in
+        *'"outbounds"'*'"protocol"'*) ;;
+        *) continue ;;
+        esac
+
+        proxy_part="${entry#*\"outbounds\":}"
+        protocol="$(json_get_string_field "$proxy_part" "protocol")"
+
+        case "$protocol" in
+        vless) ;;
+        *) continue ;;
+        esac
+
+        host="$(json_get_string_field "$proxy_part" "address")"
+        port="$(json_get_number_field "$proxy_part" "port")"
+        id="$(json_get_string_field "$proxy_part" "id")"
+        encryption="$(json_get_string_field "$proxy_part" "encryption")"
+        flow="$(json_get_string_field "$proxy_part" "flow")"
+        network="$(json_get_string_field "$proxy_part" "network")"
+        security="$(json_get_string_field "$proxy_part" "security")"
+        sni="$(json_get_string_field "$proxy_part" "serverName")"
+        fp="$(json_get_string_field "$proxy_part" "fingerprint")"
+        pbk="$(json_get_string_field "$proxy_part" "publicKey")"
+        sid="$(json_get_string_field "$proxy_part" "shortId")"
+        path="$(json_get_string_field "$proxy_part" "path")"
+        ws_host="$(json_get_string_field "$proxy_part" "Host")"
+        remarks="$(json_get_string_field "$entry" "remarks")"
+
+        [ -n "$host" ] || continue
+        is_valid_port_number "$port" || continue
+        [ -n "$id" ] || continue
+
+        [ -n "$encryption" ] || encryption="none"
+        [ -n "$network" ] || network="tcp"
+        [ -n "$security" ] || security="none"
+
+        query="encryption=$encryption"
+        [ -n "$flow" ] && query="$query&flow=$flow"
+        [ -n "$network" ] && query="$query&type=$network"
+        [ -n "$security" ] && query="$query&security=$security"
+        [ -n "$sni" ] && query="$query&sni=$sni"
+        [ -n "$fp" ] && query="$query&fp=$fp"
+        [ -n "$pbk" ] && query="$query&pbk=$pbk"
+        [ -n "$sid" ] && query="$query&sid=$sid"
+        [ -n "$path" ] && query="$query&path=$(url_escape_fragment "$path")"
+        [ -n "$ws_host" ] && query="$query&host=$ws_host"
+
+        link="vless://$id@$host:$port?$query"
+        [ -n "$remarks" ] && link="$link#$(url_escape_fragment "$remarks")"
+
+        if is_proxy_url "$link"; then
+            echo "$link" >> "$output_file"
+        fi
+    done < "$normalized_file"
+
+    if [ -s "$output_file" ]; then
+        awk '!seen[$0]++' "$output_file" > "$normalized_file"
+        mv "$normalized_file" "$output_file"
+        return 0
+    fi
+
+    rm -f "$normalized_file"
+    return 1
+}
+
 extract_proxy_links_from_subscription_file() {
     local subscription_file="$1"
     local output_file="$2"
-    local decoded_file extracted_file chunk_file
+    local decoded_file extracted_file chunk_file json_file
 
     decoded_file="$(mktemp)"
     extracted_file="$(mktemp)"
     chunk_file="$(mktemp)"
+    json_file="$(mktemp)"
 
     convert_crlf_to_lf "$subscription_file"
     extract_proxy_urls_from_file "$subscription_file" "$extracted_file"
     extract_proxy_urls_from_base64_chunks "$subscription_file" "$chunk_file"
     [ -s "$chunk_file" ] && cat "$chunk_file" >> "$extracted_file"
+    if [ ! -s "$extracted_file" ] && extract_v2ray_json_proxy_links "$subscription_file" "$json_file"; then
+        cat "$json_file" >> "$extracted_file"
+    fi
 
     if [ ! -s "$extracted_file" ] && base64_decode_file "$subscription_file" "$decoded_file"; then
         convert_crlf_to_lf "$decoded_file"
         extract_proxy_urls_from_file "$decoded_file" "$extracted_file"
         extract_proxy_urls_from_base64_chunks "$decoded_file" "$chunk_file"
         [ -s "$chunk_file" ] && cat "$chunk_file" >> "$extracted_file"
+        if [ ! -s "$extracted_file" ] && extract_v2ray_json_proxy_links "$decoded_file" "$json_file"; then
+            cat "$json_file" >> "$extracted_file"
+        fi
     fi
 
     if [ -s "$extracted_file" ]; then
         awk '!seen[$0]++' "$extracted_file" > "$output_file"
-        rm -f "$decoded_file" "$extracted_file" "$chunk_file"
+        rm -f "$decoded_file" "$extracted_file" "$chunk_file" "$json_file"
         return 0
     fi
 
-    rm -f "$decoded_file" "$extracted_file" "$chunk_file"
+    rm -f "$decoded_file" "$extracted_file" "$chunk_file" "$json_file"
     return 1
 }
 
@@ -352,13 +487,13 @@ list_servers() {
 
     if [ "$imported" -ne 0 ]; then
         for ua in \
-            "Happ/1.0" \
-            "HiddifyNext/2.5.7" \
-            "v2rayN/7.0" \
+            "sing-box/1.12.0" \
             "v2rayNG/1.9.31" \
+            "v2rayN/7.0" \
+            "HiddifyNext/2.5.7" \
+            "Happ/1.0" \
             "NekoBox/1.3" \
             "ClashMetaForAndroid/2.11.10" \
-            "sing-box/1.12.0" \
             "Shadowrocket/2.2.53" \
             "curl/8.0"; do
             [ "$ua" = "$user_agent" ] && continue
