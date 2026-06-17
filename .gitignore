@@ -1,4 +1,5 @@
 bin/
 filtered-bin/
 *.tmp
-
+!podkop-subscriptions/files/usr/bin/
+!podkop-subscriptions/files/usr/bin/podkop-subscriptions

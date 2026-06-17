@@ -22,13 +22,25 @@ check_podkop_installed() {
     [ -f /usr/lib/podkop/helpers.sh ] || fail "Podkop helpers are not installed: /usr/lib/podkop/helpers.sh not found"
     [ -f /www/luci-static/resources/view/podkop/section.js ] ||
         fail "luci-app-podkop is not installed: section.js not found"
+    [ -f /www/luci-static/resources/view/podkop/podkop.js ] ||
+        fail "luci-app-podkop is not installed: podkop.js not found"
 }
 
 pkg_install() {
     local pkg_file="$1"
 
     if [ "$PKG_IS_APK" -eq 1 ]; then
-        apk add --allow-untrusted "$pkg_file"
+        local pkg_dir pkg_base
+        pkg_dir="${pkg_file%/*}"
+        pkg_base="${pkg_file##*/}"
+
+        (
+            cd "$pkg_dir" &&
+                apk add --allow-untrusted --repositories-file /dev/null "./$pkg_base"
+        ) || (
+            cd "$pkg_dir" &&
+                apk add --allow-untrusted "./$pkg_base"
+        )
     else
         opkg install "$pkg_file"
     fi
@@ -74,12 +86,12 @@ main() {
     [ -s "$filepath" ] || fail "Failed to download $filename"
 
     msg "Installing $filename..."
-    pkg_install "$filepath"
+    pkg_install "$filepath" || fail "Failed to install $filename"
 
     msg "Podkop subscriptions addon installed."
-    msg "Restart Podkop after changing configuration: /etc/init.d/podkop restart"
+    msg "Open LuCI: Services -> Podkop -> Subscriptions"
+    msg "After selecting a server, restart Podkop: /etc/init.d/podkop restart"
     msg "If LuCI still shows the old form, clear browser/LuCI cache."
 }
 
 main
-

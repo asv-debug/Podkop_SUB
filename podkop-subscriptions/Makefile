@@ -12,13 +12,13 @@ include $(INCLUDE_DIR)/package.mk
 define Package/podkop-subscriptions
 	SECTION:=net
 	CATEGORY:=Network
-	TITLE:=Podkop subscription URL addon
+	TITLE:=Podkop subscription importer addon
 	URL:=https://github.com/asv-debug/Podkop_SUB
 	PKGARCH:=all
 endef
 
 define Package/podkop-subscriptions/description
-	Adds subscription URL support to an existing Podkop installation.
+	Adds a LuCI subscription importer tab to an existing Podkop installation.
 endef
 
 define Build/Configure
@@ -46,10 +46,14 @@ define Package/podkop-subscriptions/install
 	$(INSTALL_BIN) ./files/usr/share/podkop-subscriptions/apply.sh $(1)/usr/share/podkop-subscriptions/apply.sh
 
 	$(INSTALL_DIR) $(1)/usr/share/podkop-subscriptions/payload
-	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/podkop $(1)/usr/share/podkop-subscriptions/payload/podkop
-	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/helpers.sh $(1)/usr/share/podkop-subscriptions/payload/helpers.sh
-	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/section.js $(1)/usr/share/podkop-subscriptions/payload/section.js
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/podkop.js $(1)/usr/share/podkop-subscriptions/payload/podkop.js
+	$(INSTALL_DATA) ./files/usr/share/podkop-subscriptions/payload/subscriptions.js $(1)/usr/share/podkop-subscriptions/payload/subscriptions.js
+
+	$(INSTALL_DIR) $(1)/usr/bin
+	$(INSTALL_BIN) ./files/usr/bin/podkop-subscriptions $(1)/usr/bin/podkop-subscriptions
+
+	$(INSTALL_DIR) $(1)/usr/share/rpcd/acl.d
+	$(INSTALL_DATA) ./files/usr/share/rpcd/acl.d/luci-app-podkop-subscriptions.json $(1)/usr/share/rpcd/acl.d/luci-app-podkop-subscriptions.json
 endef
 
 $(eval $(call BuildPackage,podkop-subscriptions))
-

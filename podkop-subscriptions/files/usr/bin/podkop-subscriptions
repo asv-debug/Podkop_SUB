@@ -1,0 +1,501 @@
+#!/bin/ash
+
+set -u
+
+json_escape() {
+    awk 'BEGIN { ORS="" }
+    {
+        gsub(/\\/,"\\\\")
+        gsub(/"/,"\\\"")
+        gsub(/\t/,"\\t")
+        gsub(/\r/,"\\r")
+        gsub(/\n/,"\\n")
+        print
+    }'
+}
+
+json_string() {
+    printf '"%s"' "$(printf '%s' "$1" | json_escape)"
+}
+
+json_error() {
+    printf '{"success":false,"error":'
+    json_string "$1"
+    printf '}\n'
+}
+
+url_decode() {
+    local encoded="$1"
+    printf '%b' "$(echo "$encoded" | sed 's/+/ /g; s/%/\\x/g')"
+}
+
+url_get_scheme() {
+    local url="$1"
+    echo "${url%%://*}"
+}
+
+url_get_userinfo() {
+    local url="$1"
+    echo "$url" | sed -n -e 's#^[^:/?]*://##' -e '/@/!d' -e 's/@.*//p'
+}
+
+url_get_host() {
+    local url="$1"
+
+    url="${url#*://}"
+    url="${url#*@}"
+    url="${url%%[/?#]*}"
+
+    echo "${url%%:*}"
+}
+
+url_get_port() {
+    local url="$1"
+
+    url="${url#*://}"
+    url="${url#*@}"
+    url="${url%%[/?#]*}"
+
+    [ "$url" != "${url#*:}" ] && echo "${url#*:}" || echo ""
+}
+
+url_get_fragment() {
+    local url="$1"
+
+    [ "$url" != "${url#*#}" ] && echo "${url#*#}" || echo ""
+}
+
+url_strip_fragment() {
+    local url="$1"
+    echo "${url%%#*}"
+}
+
+base64_decode() {
+    local str="$1"
+    echo "$str" | base64 -d 2> /dev/null
+}
+
+base64_decode_file() {
+    local input_file="$1"
+    local output_file="$2"
+
+    local encoded remainder
+    encoded="$(tr -d '[:space:]' < "$input_file" | tr '_-' '/+')"
+
+    [ -z "$encoded" ] && return 1
+
+    remainder=$((${#encoded} % 4))
+    case "$remainder" in
+    0) ;;
+    2) encoded="${encoded}==" ;;
+    3) encoded="${encoded}=" ;;
+    *) return 1 ;;
+    esac
+
+    printf '%s' "$encoded" | base64 -d > "$output_file" 2> /dev/null
+}
+
+is_shadowsocks_userinfo_format() {
+    local str="$1"
+    local regex='^[^:]+:[^:]+(:[^:]+)?$'
+
+    [ -n "$str" ] && echo "$str" | grep -Eq "$regex"
+}
+
+is_valid_port_number() {
+    local port="$1"
+
+    case "$port" in
+    '' | *[!0-9]*) return 1 ;;
+    esac
+
+    [ "$port" -ge 1 ] 2> /dev/null && [ "$port" -le 65535 ] 2> /dev/null
+}
+
+is_valid_hysteria2_port() {
+    local port="$1"
+    local entry start end
+
+    [ -n "$port" ] || return 1
+
+    echo "$port" | tr ',' '\n' | while IFS= read -r entry; do
+        entry="$(echo "$entry" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+        [ -n "$entry" ] || exit 1
+
+        case "$entry" in
+        *-*)
+            case "$entry" in
+            *-*-*) exit 1 ;;
+            esac
+            start="${entry%-*}"
+            end="${entry#*-}"
+            is_valid_port_number "$start" || exit 1
+            is_valid_port_number "$end" || exit 1
+            [ "$start" -le "$end" ] 2> /dev/null || exit 1
+            ;;
+        *)
+            is_valid_port_number "$entry" || exit 1
+            ;;
+        esac
+    done
+}
+
+is_proxy_url() {
+    local url="$1"
+    local scheme host port userinfo decoded_userinfo
+
+    url="$(url_decode "$url")"
+    url="$(url_strip_fragment "$url")"
+    scheme="$(url_get_scheme "$url")"
+
+    case "$scheme" in
+    vless | ss | trojan | socks4 | socks4a | socks5 | hysteria2 | hy2) ;;
+    *) return 1 ;;
+    esac
+
+    host="$(url_get_host "$url")"
+    port="$(url_get_port "$url")"
+
+    [ -n "$host" ] || return 1
+    case "$scheme" in
+    hysteria2 | hy2)
+        is_valid_hysteria2_port "$port" || return 1
+        ;;
+    *)
+        is_valid_port_number "$port" || return 1
+        ;;
+    esac
+
+    case "$scheme" in
+    vless | trojan | hysteria2 | hy2)
+        [ -n "$(url_get_userinfo "$url")" ] || return 1
+        ;;
+    ss)
+        userinfo="$(url_get_userinfo "$url")"
+        [ -n "$userinfo" ] || return 1
+        if ! is_shadowsocks_userinfo_format "$userinfo"; then
+            decoded_userinfo="$(base64_decode "$userinfo")"
+            is_shadowsocks_userinfo_format "$decoded_userinfo" || return 1
+        fi
+        ;;
+    esac
+
+    return 0
+}
+
+convert_crlf_to_lf() {
+    local filepath="$1"
+    local tmpfile
+
+    if grep -q "$(printf '\r')" "$filepath"; then
+        tmpfile="$(mktemp)"
+        tr -d '\r' < "$filepath" > "$tmpfile" && mv "$tmpfile" "$filepath" || rm -f "$tmpfile"
+    fi
+}
+
+extract_proxy_urls_from_file() {
+    local input_file="$1"
+    local output_file="$2"
+    local normalized_file
+
+    normalized_file="$(mktemp)"
+    sed 's#\\/#/#g; s#\\u0026#\&#g' "$input_file" > "$normalized_file"
+
+    grep -Eo "(vless|ss|trojan|socks4|socks4a|socks5|hysteria2|hy2)://[^[:space:]'\"<>]+" "$normalized_file" |
+        sed 's/[[:cntrl:]]//g' |
+        sed 's/[]}),;]*$//' |
+        while IFS= read -r line; do
+            if is_proxy_url "$line"; then
+                echo "$line"
+            fi
+        done |
+        awk '!seen[$0]++' > "$output_file"
+
+    rm -f "$normalized_file"
+}
+
+extract_proxy_urls_from_base64_chunks() {
+    local input_file="$1"
+    local output_file="$2"
+
+    grep -Eo '[A-Za-z0-9_-]{32,}={0,2}' "$input_file" |
+        head -n 200 |
+        while IFS= read -r token; do
+            token_file="$(mktemp)"
+            decoded_file="$(mktemp)"
+            urls_file="$(mktemp)"
+
+            printf '%s' "$token" > "$token_file"
+
+            if base64_decode_file "$token_file" "$decoded_file"; then
+                extract_proxy_urls_from_file "$decoded_file" "$urls_file"
+                [ -s "$urls_file" ] && cat "$urls_file"
+            fi
+
+            rm -f "$token_file" "$decoded_file" "$urls_file"
+        done |
+        awk '!seen[$0]++' > "$output_file"
+}
+
+extract_proxy_links_from_subscription_file() {
+    local subscription_file="$1"
+    local output_file="$2"
+    local decoded_file extracted_file chunk_file
+
+    decoded_file="$(mktemp)"
+    extracted_file="$(mktemp)"
+    chunk_file="$(mktemp)"
+
+    convert_crlf_to_lf "$subscription_file"
+    extract_proxy_urls_from_file "$subscription_file" "$extracted_file"
+    extract_proxy_urls_from_base64_chunks "$subscription_file" "$chunk_file"
+    [ -s "$chunk_file" ] && cat "$chunk_file" >> "$extracted_file"
+
+    if [ ! -s "$extracted_file" ] && base64_decode_file "$subscription_file" "$decoded_file"; then
+        convert_crlf_to_lf "$decoded_file"
+        extract_proxy_urls_from_file "$decoded_file" "$extracted_file"
+        extract_proxy_urls_from_base64_chunks "$decoded_file" "$chunk_file"
+        [ -s "$chunk_file" ] && cat "$chunk_file" >> "$extracted_file"
+    fi
+
+    if [ -s "$extracted_file" ]; then
+        awk '!seen[$0]++' "$extracted_file" > "$output_file"
+        rm -f "$decoded_file" "$extracted_file" "$chunk_file"
+        return 0
+    fi
+
+    rm -f "$decoded_file" "$extracted_file" "$chunk_file"
+    return 1
+}
+
+download_subscription_to_file() {
+    local url="$1"
+    local filepath="$2"
+    local user_agent="$3"
+
+    rm -f "$filepath"
+
+    if command -v curl > /dev/null 2>&1; then
+        curl -fL --compressed \
+            --connect-timeout 15 \
+            --max-time 45 \
+            -A "$user_agent" \
+            -H "Accept: text/plain, application/json, application/yaml, */*" \
+            -o "$filepath" \
+            "$url" > /dev/null 2>&1
+        return $?
+    fi
+
+    wget -q -U "$user_agent" -O "$filepath" "$url" > /dev/null 2>&1 ||
+        wget -q --user-agent="$user_agent" -O "$filepath" "$url" > /dev/null 2>&1 ||
+        wget -q -O "$filepath" "$url" > /dev/null 2>&1
+}
+
+try_import_subscription_url() {
+    local url="$1"
+    local user_agent="$2"
+    local output_file="$3"
+    local tmpfile links_tmpfile
+
+    tmpfile="$(mktemp)"
+    links_tmpfile="$(mktemp)"
+
+    if download_subscription_to_file "$url" "$tmpfile" "$user_agent" && [ -s "$tmpfile" ]; then
+        if extract_proxy_links_from_subscription_file "$tmpfile" "$links_tmpfile"; then
+            cat "$links_tmpfile" >> "$output_file"
+            rm -f "$tmpfile" "$links_tmpfile"
+            return 0
+        fi
+    fi
+
+    rm -f "$tmpfile" "$links_tmpfile"
+    return 1
+}
+
+remove_old_subscription_cron_jobs() {
+    local tmpfile
+
+    command -v crontab >/dev/null 2>&1 || return 0
+
+    tmpfile="$(mktemp)"
+    if crontab -l > "$tmpfile" 2>/dev/null; then
+        grep -v "podkop-subscription-update-" "$tmpfile" | crontab - >/dev/null 2>&1 || true
+    fi
+    rm -f "$tmpfile"
+}
+
+list_servers() {
+    local url="$1"
+    local user_agent="${2:-auto}"
+    local limit="${3:-100}"
+    local merged_tmpfile output_file ua imported count index link scheme host port name
+
+    [ -n "$url" ] || {
+        json_error "Subscription URL is required"
+        return 1
+    }
+
+    case "$limit" in
+    '' | *[!0-9]*) limit=100 ;;
+    esac
+
+    merged_tmpfile="$(mktemp)"
+    output_file="$(mktemp)"
+    : > "$merged_tmpfile"
+
+    imported=1
+    if [ -n "$user_agent" ] && [ "$user_agent" != "auto" ]; then
+        if try_import_subscription_url "$url" "$user_agent" "$merged_tmpfile"; then
+            imported=0
+        fi
+    fi
+
+    if [ "$imported" -ne 0 ]; then
+        for ua in \
+            "Happ/1.0" \
+            "HiddifyNext/2.5.7" \
+            "v2rayN/7.0" \
+            "v2rayNG/1.9.31" \
+            "NekoBox/1.3" \
+            "ClashMetaForAndroid/2.11.10" \
+            "sing-box/1.12.0" \
+            "Shadowrocket/2.2.53" \
+            "curl/8.0"; do
+            [ "$ua" = "$user_agent" ] && continue
+            if try_import_subscription_url "$url" "$ua" "$merged_tmpfile"; then
+                imported=0
+                break
+            fi
+        done
+    fi
+
+    if [ ! -s "$merged_tmpfile" ]; then
+        rm -f "$merged_tmpfile" "$output_file"
+        json_error "No supported proxy links found in subscription"
+        return 1
+    fi
+
+    awk '!seen[$0]++' "$merged_tmpfile" > "$output_file"
+    rm -f "$merged_tmpfile"
+
+    if [ "$limit" -gt 0 ]; then
+        limited_tmpfile="$(mktemp)"
+        head -n "$limit" "$output_file" > "$limited_tmpfile"
+        mv "$limited_tmpfile" "$output_file"
+    fi
+
+    count="$(wc -l < "$output_file" | tr -d ' ')"
+    printf '{"success":true,"count":%s,"servers":[' "$count"
+
+    index=1
+    while IFS= read -r link; do
+        [ -z "$link" ] && continue
+        scheme="$(url_get_scheme "$link")"
+        host="$(url_get_host "$link")"
+        port="$(url_get_port "$link")"
+        name="$(url_decode "$(url_get_fragment "$link")")"
+        [ -n "$name" ] || name="$scheme://$host:$port"
+
+        [ "$index" -gt 1 ] && printf ','
+        printf '{"index":%s,"name":' "$index"
+        json_string "$name"
+        printf ',"scheme":'
+        json_string "$scheme"
+        printf ',"host":'
+        json_string "$host"
+        printf ',"port":'
+        json_string "$port"
+        printf ',"link":'
+        json_string "$link"
+        printf '}'
+        index=$((index + 1))
+    done < "$output_file"
+
+    printf ']}\n'
+    rm -f "$output_file"
+}
+
+apply_server() {
+    local section="$1"
+    local link="$2"
+
+    [ -n "$section" ] || {
+        json_error "Podkop section is required"
+        return 1
+    }
+
+    if ! is_proxy_url "$link"; then
+        json_error "Selected proxy link is invalid"
+        return 1
+    fi
+
+    if ! uci -q show "podkop.$section" > /dev/null 2>&1; then
+        json_error "Podkop section does not exist"
+        return 1
+    fi
+
+    uci set "podkop.$section.connection_type=proxy"
+    uci set "podkop.$section.proxy_config_type=url"
+    uci set "podkop.$section.proxy_string=$link"
+    uci -q delete "podkop.$section.subscription_urls"
+    uci -q delete "podkop.$section.subscription_max_servers"
+    uci -q delete "podkop.$section.subscription_user_agent"
+    uci -q delete "podkop.$section.subscription_update_interval"
+    uci -q delete "podkop.$section.subscription_update_time"
+    uci -q delete "podkop.$section.subscription_update_weekday"
+    uci -q delete "podkop.$section.subscription_content"
+    remove_old_subscription_cron_jobs
+    uci commit podkop || {
+        json_error "Failed to save Podkop configuration"
+        return 1
+    }
+
+    printf '{"success":true}\n'
+}
+
+ping_server() {
+    local link="$1"
+    local host latency
+
+    if ! is_proxy_url "$link"; then
+        json_error "Selected proxy link is invalid"
+        return 1
+    fi
+
+    host="$(url_get_host "$link")"
+    [ -n "$host" ] || {
+        json_error "Proxy host is empty"
+        return 1
+    }
+
+    latency="$(
+        ping -c 1 -W 2 "$host" 2>/dev/null |
+            sed -n 's/.*time=\([0-9.][0-9.]*\).*/\1/p' |
+            head -n 1
+    )"
+
+    [ -n "$latency" ] || {
+        json_error "Ping failed"
+        return 1
+    }
+
+    printf '{"success":true,"latency_ms":'
+    json_string "$latency"
+    printf '}\n'
+}
+
+case "${1:-}" in
+list)
+    list_servers "${2:-}" "${3:-auto}" "${4:-100}"
+    ;;
+apply)
+    apply_server "${2:-}" "${3:-}"
+    ;;
+ping)
+    ping_server "${2:-}"
+    ;;
+*)
+    json_error "Usage: podkop-subscriptions {list URL [USER_AGENT] [LIMIT]|apply SECTION LINK|ping LINK}"
+    exit 1
+    ;;
+esac

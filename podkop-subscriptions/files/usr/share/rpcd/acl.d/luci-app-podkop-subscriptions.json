@@ -1,0 +1,25 @@
+{
+  "luci-app-podkop-subscriptions": {
+    "description": "Grant access to Podkop subscription importer",
+    "read": {
+      "file": {
+        "/usr/bin/podkop-subscriptions": [
+          "exec"
+        ]
+      },
+      "uci": [
+        "podkop"
+      ]
+    },
+    "write": {
+      "file": {
+        "/usr/bin/podkop-subscriptions": [
+          "exec"
+        ]
+      },
+      "uci": [
+        "podkop"
+      ]
+    }
+  }
+}
