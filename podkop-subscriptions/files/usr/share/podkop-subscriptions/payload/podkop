@@ -135,6 +135,8 @@ start_main() {
     # sing-box
     sing_box_init_config
     config_foreach add_cron_job "section"
+    remove_subscription_update_cron_job
+    config_foreach add_subscription_update_cron_job "section"
     /etc/init.d/sing-box start
 
     log "Nice"
@@ -155,6 +157,7 @@ stop_main() {
     fi
 
     remove_cron_job
+    remove_subscription_update_cron_job
 
     rm -f "$TMP_RULESET_FOLDER"/*
 
@@ -478,6 +481,83 @@ add_cron_job() {
 remove_cron_job() {
     (crontab -l | grep -v "/usr/bin/podkop list_update") | crontab -
     log "The cron job removed"
+}
+
+add_subscription_update_cron_job() {
+    local section="$1"
+    local connection_type proxy_config_type update_interval update_time update_weekday cron_job hour minute
+
+    config_get connection_type "$section" "connection_type"
+    config_get proxy_config_type "$section" "proxy_config_type"
+
+    [ "$connection_type" = "proxy" ] || return 0
+    [ "$proxy_config_type" = "subscription" ] || return 0
+
+    config_get update_interval "$section" "subscription_update_interval" "disabled"
+
+    case "$update_interval" in
+    disabled | "")
+        return 0
+        ;;
+    1h)
+        cron_job="23 * * * * /etc/init.d/podkop reload # podkop-subscription-update-$section"
+        ;;
+    1d)
+        config_get update_time "$section" "subscription_update_time" "04:00"
+        hour="${update_time%%:*}"
+        minute="${update_time#*:}"
+
+        case "$hour" in
+        '' | *[!0-9]*) hour="4" ;;
+        *) [ "$hour" -gt 23 ] 2> /dev/null && hour="4" ;;
+        esac
+
+        case "$minute" in
+        '' | *[!0-9]*) minute="0" ;;
+        *) [ "$minute" -gt 59 ] 2> /dev/null && minute="0" ;;
+        esac
+
+        cron_job="$minute $hour * * * /etc/init.d/podkop reload # podkop-subscription-update-$section"
+        ;;
+    1w)
+        config_get update_time "$section" "subscription_update_time" "04:00"
+        config_get update_weekday "$section" "subscription_update_weekday" "1"
+        hour="${update_time%%:*}"
+        minute="${update_time#*:}"
+
+        case "$hour" in
+        '' | *[!0-9]*) hour="4" ;;
+        *) [ "$hour" -gt 23 ] 2> /dev/null && hour="4" ;;
+        esac
+
+        case "$minute" in
+        '' | *[!0-9]*) minute="0" ;;
+        *) [ "$minute" -gt 59 ] 2> /dev/null && minute="0" ;;
+        esac
+
+        case "$update_weekday" in
+        [0-6]) ;;
+        *) update_weekday="1" ;;
+        esac
+
+        cron_job="$minute $hour * * $update_weekday /etc/init.d/podkop reload # podkop-subscription-update-$section"
+        ;;
+    *)
+        log "Invalid subscription_update_interval value for '$section': $update_interval" "warn"
+        return 0
+        ;;
+    esac
+
+    crontab -l | {
+        cat
+        echo "$cron_job"
+    } | crontab -
+    log "The subscription update cron job has been created for '$section': $cron_job"
+}
+
+remove_subscription_update_cron_job() {
+    (crontab -l | grep -v "podkop-subscription-update-") | crontab -
+    log "The subscription update cron jobs removed"
 }
 
 list_update() {
@@ -1324,25 +1404,87 @@ extract_proxy_links_from_subscription_file() {
     local subscription_file="$1"
     local output_file="$2"
 
-    local decoded_file extracted_file
+    local decoded_file extracted_file chunk_file
     decoded_file="$(mktemp)"
     extracted_file="$(mktemp)"
+    chunk_file="$(mktemp)"
 
     convert_crlf_to_lf "$subscription_file"
     extract_proxy_urls_from_file "$subscription_file" "$extracted_file"
 
+    extract_proxy_urls_from_base64_chunks "$subscription_file" "$chunk_file"
+    if [ -s "$chunk_file" ]; then
+        cat "$chunk_file" >> "$extracted_file"
+    fi
+
     if [ ! -s "$extracted_file" ] && base64_decode_file "$subscription_file" "$decoded_file"; then
         convert_crlf_to_lf "$decoded_file"
         extract_proxy_urls_from_file "$decoded_file" "$extracted_file"
+        extract_proxy_urls_from_base64_chunks "$decoded_file" "$chunk_file"
+        if [ -s "$chunk_file" ]; then
+            cat "$chunk_file" >> "$extracted_file"
+        fi
     fi
 
     if [ -s "$extracted_file" ]; then
-        mv "$extracted_file" "$output_file"
-        rm -f "$decoded_file"
+        awk '!seen[$0]++' "$extracted_file" > "$output_file"
+        rm -f "$decoded_file" "$extracted_file" "$chunk_file"
         return 0
     fi
 
-    rm -f "$decoded_file" "$extracted_file"
+    rm -f "$decoded_file" "$extracted_file" "$chunk_file"
+    return 1
+}
+
+download_subscription_to_file() {
+    local url="$1"
+    local filepath="$2"
+    local user_agent="$3"
+
+    rm -f "$filepath"
+
+    if command -v curl > /dev/null 2>&1; then
+        curl -fL --compressed \
+            --connect-timeout 15 \
+            --max-time 45 \
+            -A "$user_agent" \
+            -H "Accept: text/plain, application/json, application/yaml, */*" \
+            -o "$filepath" \
+            "$url" > /dev/null 2>&1
+        return $?
+    fi
+
+    wget -q -U "$user_agent" -O "$filepath" "$url" > /dev/null 2>&1 ||
+        wget -q --user-agent="$user_agent" -O "$filepath" "$url" > /dev/null 2>&1 ||
+        wget -q -O "$filepath" "$url" > /dev/null 2>&1
+}
+
+try_import_subscription_url() {
+    local url="$1"
+    local user_agent="$2"
+    local output_file="$3"
+
+    local tmpfile links_tmpfile link_count
+    tmpfile="$(mktemp)"
+    links_tmpfile="$(mktemp)"
+
+    log "Downloading proxy subscription with User-Agent '$user_agent': $url"
+
+    if download_subscription_to_file "$url" "$tmpfile" "$user_agent" && [ -s "$tmpfile" ]; then
+        if extract_proxy_links_from_subscription_file "$tmpfile" "$links_tmpfile"; then
+            link_count="$(wc -l < "$links_tmpfile" | tr -d ' ')"
+            log "Imported $link_count proxy links from subscription $url with User-Agent '$user_agent'"
+            cat "$links_tmpfile" >> "$output_file"
+            rm -f "$tmpfile" "$links_tmpfile"
+            return 0
+        fi
+
+        log "Subscription response did not contain supported proxy links with User-Agent '$user_agent'" "debug"
+    else
+        log "Download subscription $url failed with User-Agent '$user_agent'" "debug"
+    fi
+
+    rm -f "$tmpfile" "$links_tmpfile"
     return 1
 }
 
@@ -1350,9 +1492,10 @@ prepare_subscription_proxy_links() {
     local section="$1"
     local output_file="$2"
 
-    local subscription_urls subscription_max_servers
+    local subscription_urls subscription_max_servers subscription_user_agent
     config_get subscription_urls "$section" "subscription_urls"
     config_get subscription_max_servers "$section" "subscription_max_servers" "50"
+    config_get subscription_user_agent "$section" "subscription_user_agent"
 
     if [ -z "$subscription_urls" ]; then
         log "Subscription URLs are not set for '$section' section" "error"
@@ -1370,29 +1513,37 @@ prepare_subscription_proxy_links() {
     merged_tmpfile="$(mktemp)"
     : > "$merged_tmpfile"
 
-    local url tmpfile links_tmpfile link_count
+    local url user_agent imported
     for url in $subscription_urls; do
-        tmpfile="$(mktemp)"
-        links_tmpfile="$(mktemp)"
+        imported=1
 
-        log "Downloading proxy subscription for '$section' section: $url"
-        download_to_file "$url" "$tmpfile" ""
-
-        if [ ! -s "$tmpfile" ]; then
-            log "Download subscription $url failed" "error"
-            rm -f "$tmpfile" "$links_tmpfile"
-            continue
+        if [ -n "$subscription_user_agent" ]; then
+            if try_import_subscription_url "$url" "$subscription_user_agent" "$merged_tmpfile"; then
+                imported=0
+            fi
         fi
 
-        if extract_proxy_links_from_subscription_file "$tmpfile" "$links_tmpfile"; then
-            link_count="$(wc -l < "$links_tmpfile" | tr -d ' ')"
-            log "Imported $link_count proxy links from subscription $url"
-            cat "$links_tmpfile" >> "$merged_tmpfile"
-        else
+        if [ "$imported" -ne 0 ]; then
+            for user_agent in \
+                "Happ/1.0" \
+                "HiddifyNext/2.5.7" \
+                "v2rayN/7.0" \
+                "v2rayNG/1.9.31" \
+                "NekoBox/1.3" \
+                "ClashMetaForAndroid/2.11.10" \
+                "sing-box/1.12.0" \
+                "Shadowrocket/2.2.53" \
+                "curl/8.0"; do
+                if try_import_subscription_url "$url" "$user_agent" "$merged_tmpfile"; then
+                    imported=0
+                    break
+                fi
+            done
+        fi
+
+        if [ "$imported" -ne 0 ]; then
             log "No supported proxy links found in subscription $url" "error"
         fi
-
-        rm -f "$tmpfile" "$links_tmpfile"
     done
 
     if [ ! -s "$merged_tmpfile" ]; then

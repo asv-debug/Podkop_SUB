@@ -115,6 +115,63 @@ function createSectionContent(section) {
   };
 
   o = section.option(
+    form.Value,
+    "subscription_user_agent",
+    _("Subscription User-Agent"),
+    _(
+      "Optional. Leave empty to try Happ, Hiddify, v2rayN, v2rayNG, NekoBox, Clash Meta, sing-box and other client User-Agents automatically",
+    ),
+  );
+  o.placeholder = "Happ/1.0";
+  o.depends("proxy_config_type", "subscription");
+
+  o = section.option(
+    form.ListValue,
+    "subscription_update_interval",
+    _("Subscription Auto Update"),
+    _("Automatically reload Podkop to download fresh subscription servers"),
+  );
+  o.value("disabled", _("Disabled"));
+  o.value("1h", _("Every hour"));
+  o.value("1d", _("Every day"));
+  o.value("1w", _("Every week"));
+  o.default = "disabled";
+  o.rmempty = false;
+  o.depends("proxy_config_type", "subscription");
+
+  o = section.option(
+    form.ListValue,
+    "subscription_update_time",
+    _("Subscription Update Time"),
+    _("Time of day for daily or weekly subscription updates"),
+  );
+  for (let hour = 0; hour < 24; hour++) {
+    const value = `${String(hour).padStart(2, "0")}:00`;
+    o.value(value, value);
+  }
+  o.default = "04:00";
+  o.rmempty = false;
+  o.depends("subscription_update_interval", "1d");
+  o.depends("subscription_update_interval", "1w");
+
+  o = section.option(
+    form.ListValue,
+    "subscription_update_weekday",
+    _("Subscription Update Day"),
+    _("Day of week for weekly subscription updates"),
+  );
+  o.value("1", _("Monday"));
+  o.value("2", _("Tuesday"));
+  o.value("3", _("Wednesday"));
+  o.value("4", _("Thursday"));
+  o.value("5", _("Friday"));
+  o.value("6", _("Saturday"));
+  o.value("0", _("Sunday"));
+  o.default = "1";
+  o.rmempty = false;
+  o.depends("subscription_update_interval", "1w");
+
+  o = section.option(
     form.TextValue,
     "outbound_json",
     _("Outbound Configuration"),

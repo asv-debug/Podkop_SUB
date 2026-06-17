@@ -2,6 +2,8 @@
 
 Дополнение для уже установленного Podkop на OpenWrt. Добавляет в LuCI режим `Subscription URL`, который импортирует proxy-ссылки из подписки, проверяет задержку через `urltest` и позволяет выбрать сервер через существующий selector/Dashboard.
 
+Поддерживает обычные client subscription endpoints для Happ/Hiddify/v2rayN/v2rayNG/NekoBox/Clash Meta/sing-box: addon пробует несколько User-Agent, понимает plain/base64/base64url списки, а также JSON/YAML-обертки с proxy-ссылками или base64-полями.
+
 ## Требования
 
 - Установленный Podkop и luci-app-podkop.
@@ -15,6 +17,14 @@ wget -O - https://raw.githubusercontent.com/asv-debug/Podkop_SUB/main/install.sh
 ```
 
 После установки откройте LuCI: `Services -> Podkop -> Sections`, выберите `Connection Type: Proxy`, затем `Configuration Type: Subscription URL`.
+
+Если провайдер требует конкретный клиентский User-Agent, укажите его в поле `Subscription User-Agent`. Для Happ обычно подходит:
+
+```text
+Happ/1.0
+```
+
+Автообновление подписки настраивается в той же секции: каждый час, каждый день в выбранное время или каждую неделю в выбранный день и время.
 
 ## Что делает пакет
 
@@ -37,4 +47,3 @@ apk del podkop-subscriptions
 ```
 
 При удалении пакет пытается восстановить файлы из backup.
-

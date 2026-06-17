@@ -251,12 +251,43 @@ extract_proxy_urls_from_file() {
     local input_file="$1"
     local output_file="$2"
 
-    grep -Eo "(vless|ss|trojan|socks4|socks4a|socks5|hysteria2|hy2)://[^[:space:]'\"<>]+" "$input_file" |
+    local normalized_file
+    normalized_file="$(mktemp)"
+
+    sed 's#\\/#/#g; s#\\u0026#\&#g' "$input_file" > "$normalized_file"
+
+    grep -Eo "(vless|ss|trojan|socks4|socks4a|socks5|hysteria2|hy2)://[^[:space:]'\"<>]+" "$normalized_file" |
         sed 's/[[:cntrl:]]//g' |
+        sed 's/[]}),;]*$//' |
         while IFS= read -r line; do
             if is_proxy_url "$line"; then
                 echo "$line"
             fi
+        done |
+        awk '!seen[$0]++' > "$output_file"
+
+    rm -f "$normalized_file"
+}
+
+extract_proxy_urls_from_base64_chunks() {
+    local input_file="$1"
+    local output_file="$2"
+
+    grep -Eo '[A-Za-z0-9_-]{32,}={0,2}' "$input_file" |
+        head -n 200 |
+        while IFS= read -r token; do
+            token_file="$(mktemp)"
+            decoded_file="$(mktemp)"
+            urls_file="$(mktemp)"
+
+            printf '%s' "$token" > "$token_file"
+
+            if base64_decode_file "$token_file" "$decoded_file"; then
+                extract_proxy_urls_from_file "$decoded_file" "$urls_file"
+                [ -s "$urls_file" ] && cat "$urls_file"
+            fi
+
+            rm -f "$token_file" "$decoded_file" "$urls_file"
         done |
         awk '!seen[$0]++' > "$output_file"
 }
