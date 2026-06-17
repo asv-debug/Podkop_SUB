@@ -2,6 +2,8 @@
 
 REPO="https://api.github.com/repos/asv-debug/Podkop_SUB/releases/latest"
 LATEST_DOWNLOAD_BASE="https://github.com/asv-debug/Podkop_SUB/releases/latest/download"
+CDN_DOWNLOAD_BASE="https://cdn.jsdelivr.net/gh/asv-debug/Podkop_SUB@main/packages"
+RAW_DOWNLOAD_BASE="https://raw.githubusercontent.com/asv-debug/Podkop_SUB/main/packages"
 DOWNLOAD_DIR="/tmp/podkop-subscriptions"
 PKG_NAME="podkop-subscriptions"
 COUNT=3
@@ -82,12 +84,24 @@ main() {
 
     grep_url_pattern="https://[^\"[:space:]]*${PKG_NAME}[^\"[:space:]]*\\.${extension}"
 
-    local stable_filename stable_filepath stable_url filename filepath
+    local stable_filename stable_filepath stable_url cdn_url raw_url filename filepath cache_buster
     stable_filename="${PKG_NAME}.${extension}"
     stable_filepath="$DOWNLOAD_DIR/$stable_filename"
     stable_url="$LATEST_DOWNLOAD_BASE/$stable_filename"
+    raw_url="$RAW_DOWNLOAD_BASE/$stable_filename"
+    cache_buster="$(date +%s 2>/dev/null || echo 0)"
+    cdn_url="$CDN_DOWNLOAD_BASE/$stable_filename?v=$cache_buster"
 
-    if ! download_file "$stable_url" "$stable_filepath" "$stable_filename"; then
+    filename="$stable_filename"
+    filepath="$stable_filepath"
+
+    if download_file "$cdn_url" "$stable_filepath" "$stable_filename"; then
+        :
+    elif download_file "$raw_url" "$stable_filepath" "$stable_filename"; then
+        :
+    elif download_file "$stable_url" "$stable_filepath" "$stable_filename"; then
+        :
+    else
         local urls
         urls="$(wget -qO- "$REPO" | grep -o "$grep_url_pattern")"
         [ -n "$urls" ] || fail "No ${PKG_NAME}.${extension} asset found in latest release"
@@ -98,9 +112,6 @@ main() {
         filepath="$DOWNLOAD_DIR/$filename"
 
         download_file "$url" "$filepath" "$filename" || fail "Failed to download $filename"
-    else
-        filename="$stable_filename"
-        filepath="$stable_filepath"
     fi
 
     msg "Installing $filename..."
