@@ -81,7 +81,14 @@ download_file() {
     attempt=0
     while [ "$attempt" -lt "$COUNT" ]; do
         msg "Download $filename (attempt $((attempt + 1))/$COUNT)..."
-        if wget -q -O "$filepath" "$url" && [ -s "$filepath" ]; then
+        if command -v curl >/dev/null 2>&1 &&
+            curl -fL --connect-timeout 15 --max-time 120 -o "$filepath" "$url" >/dev/null 2>&1 &&
+            [ -s "$filepath" ]; then
+            return 0
+        fi
+        if command -v wget >/dev/null 2>&1 &&
+            wget -q -O "$filepath" "$url" &&
+            [ -s "$filepath" ]; then
             return 0
         fi
         rm -f "$filepath"
@@ -90,6 +97,17 @@ download_file() {
     done
 
     return 1
+}
+
+fetch_text() {
+    local url="$1"
+
+    if command -v curl >/dev/null 2>&1; then
+        curl -fL --connect-timeout 15 --max-time 60 "$url" 2>/dev/null
+        return $?
+    fi
+
+    wget -qO- "$url"
 }
 
 main() {
@@ -126,7 +144,7 @@ main() {
         :
     else
         local urls
-        urls="$(wget -qO- "$REPO" | grep -o "$grep_url_pattern")"
+        urls="$(fetch_text "$REPO" | grep -o "$grep_url_pattern")"
         [ -n "$urls" ] || fail "No ${PKG_NAME}.${extension} asset found in latest release"
 
         local url
