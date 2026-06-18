@@ -251,11 +251,42 @@ get_probe_port() {
     echo $((19090 + ($$ % 1000)))
 }
 
+get_probe_inbound_port() {
+    local controller_port="$1"
+    local index="$2"
+
+    echo $((controller_port + index))
+}
+
+seconds_to_ms() {
+    local seconds="$1"
+
+    echo "$seconds" |
+        awk '
+            /^[0-9]+(\.[0-9]+)?$/ {
+                if ($1 <= 0) {
+                    exit 1
+                }
+                ms = int(($1 * 1000) + 0.5)
+                if (ms < 1) {
+                    ms = 1
+                }
+                print ms
+                ok = 1
+            }
+            END {
+                if (!ok) {
+                    exit 1
+                }
+            }
+        '
+}
+
 build_probe_config() {
     local links_file="$1"
     local controller_port="$2"
     local config_file="$3"
-    local config link index outbound_tag outbound_tags first_outbound selector_outbounds
+    local config link index inbound_port inbound_tag outbound_tag
 
     config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
     config="$(sing_box_cm_configure_log "$config" true "error" false)" || return 1
@@ -265,26 +296,17 @@ build_probe_config() {
     config="$(sing_box_cm_configure_route "$config" "direct-out" true "probe-dns" "")" || return 1
 
     index=1
-    outbound_tags=""
-    first_outbound=""
     while IFS= read -r link; do
         [ -n "$link" ] || continue
+        inbound_tag="probe-$index-in"
+        inbound_port="$(get_probe_inbound_port "$controller_port" "$index")"
         outbound_tag="probe-$index-out"
         config="$(sing_box_cf_add_proxy_outbound "$config" "probe-$index" "$link" "")" || return 1
-
-        if [ -z "$outbound_tags" ]; then
-            outbound_tags="$outbound_tag"
-            first_outbound="$outbound_tag"
-        else
-            outbound_tags="$outbound_tags,$outbound_tag"
-        fi
+        config="$(sing_box_cf_add_mixed_inbound_and_route_rule "$config" "$inbound_tag" "127.0.0.1" "$inbound_port" "$outbound_tag")" || return 1
         index=$((index + 1))
     done < "$links_file"
 
-    [ -n "$outbound_tags" ] || return 1
-
-    selector_outbounds="$(comma_string_to_json_array "$outbound_tags")"
-    config="$(sing_box_cm_add_selector_outbound "$config" "probe-out" "$selector_outbounds" "$first_outbound")" || return 1
+    [ "$index" -gt 1 ] || return 1
     config="$(sing_box_cm_configure_clash_api "$config" "127.0.0.1:$controller_port" "" "")" || return 1
 
     printf '%s' "$config" | jq . > "$config_file" || return 1
@@ -314,7 +336,7 @@ run_probe_config() {
     local controller_port="$2"
     local links_file="$3"
     local response_file="$4"
-    local log_file result_dir pid probe_pids probe_pid index link tag response latency tmpfile
+    local log_file result_dir pid probe_pids probe_pid index link tag inbound_port elapsed latency tmpfile running max_parallel
 
     log_file="$(mktemp)"
     sing-box run -c "$config_file" > /dev/null 2> "$log_file" &
@@ -338,25 +360,37 @@ run_probe_config() {
 
     index=1
     probe_pids=""
+    running=0
+    max_parallel=6
     while IFS= read -r link; do
         [ -n "$link" ] || continue
         tag="probe-$index-out"
+        inbound_port="$(get_probe_inbound_port "$controller_port" "$index")"
         (
-            response="$(
-                curl -G -s --noproxy '*' \
+            elapsed="$(
+                curl -f -s -o /dev/null \
                     --connect-timeout 2 \
                     --max-time 8 \
-                    "http://127.0.0.1:$controller_port/proxies/$tag/delay" \
-                    --data-urlencode "url=https://www.gstatic.com/generate_204" \
-                    --data-urlencode "timeout=5000" 2> /dev/null || true
+                    -x "http://127.0.0.1:$inbound_port" \
+                    -w '%{time_total}' \
+                    "https://www.gstatic.com/generate_204" 2> /dev/null || true
             )"
-            latency="$(printf '%s' "$response" | jq -r '.delay // empty' 2> /dev/null)"
+            latency="$(seconds_to_ms "$elapsed" 2> /dev/null || true)"
             case "$latency" in
             '' | null | *[!0-9]*) ;;
             *) printf '%s\n' "$latency" > "$result_dir/$index" ;;
             esac
         ) &
         probe_pids="$probe_pids $!"
+        running=$((running + 1))
+
+        if [ "$running" -ge "$max_parallel" ]; then
+            for probe_pid in $probe_pids; do
+                wait "$probe_pid" > /dev/null 2>&1 || true
+            done
+            probe_pids=""
+            running=0
+        fi
 
         index=$((index + 1))
     done < "$links_file"
