@@ -59,70 +59,6 @@ url_get_port() {
     [ "$url" != "${url#*:}" ] && echo "${url#*:}" || echo ""
 }
 
-first_probe_port() {
-    local port="$1"
-
-    port="${port%%,*}"
-    port="${port%%-*}"
-    echo "$port"
-}
-
-now_ms() {
-    awk '{ printf "%d", ($1 * 1000) }' /proc/uptime 2> /dev/null || date +%s000
-}
-
-seconds_to_ms() {
-    local seconds="$1"
-
-    echo "$seconds" |
-        awk '
-            /^[0-9]+(\.[0-9]+)?$/ {
-                if ($1 <= 0) {
-                    exit 1
-                }
-                ms = int(($1 * 1000) + 0.5)
-                if (ms < 1) {
-                    ms = 1
-                }
-                print ms
-                ok = 1
-            }
-            END {
-                if (!ok) {
-                    exit 1
-                }
-            }
-        '
-}
-
-curl_https_latency() {
-    local host="$1"
-    local port="$2"
-    local seconds latency
-
-    command -v curl > /dev/null 2>&1 || return 1
-
-    seconds="$(
-        curl -k -s -o /dev/null \
-            --noproxy '*' \
-            --connect-timeout 2 \
-            --max-time 3 \
-            -w '%{time_connect}' \
-            "https://$host:$port/" 2> /dev/null || true
-    )"
-    latency="$(seconds_to_ms "$seconds")" || return 1
-    [ "$latency" -gt 0 ] || return 1
-
-    printf '%s' "$latency"
-}
-
-probe_link_latency() {
-    local host="$1"
-    local port="$2"
-
-    curl_https_latency "$host" "$port"
-}
-
 url_get_fragment() {
     local url="$1"
 
@@ -296,6 +232,196 @@ is_proxy_url() {
     esac
 
     return 0
+}
+
+load_podkop_probe_helpers() {
+    [ -r /usr/lib/podkop/helpers.sh ] || return 1
+    [ -r /usr/lib/podkop/sing_box_config_manager.sh ] || return 1
+    [ -r /usr/lib/podkop/sing_box_config_facade.sh ] || return 1
+    command -v sing-box > /dev/null 2>&1 || return 1
+    command -v curl > /dev/null 2>&1 || return 1
+    command -v jq > /dev/null 2>&1 || return 1
+
+    . /usr/lib/podkop/helpers.sh
+    . /usr/lib/podkop/sing_box_config_manager.sh
+    . /usr/lib/podkop/sing_box_config_facade.sh
+}
+
+get_probe_port() {
+    echo $((19090 + ($$ % 1000)))
+}
+
+build_probe_config() {
+    local links_file="$1"
+    local controller_port="$2"
+    local config_file="$3"
+    local config link index outbound_tag outbound_tags first_outbound selector_outbounds
+
+    config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
+    config="$(sing_box_cm_configure_log "$config" true "error" false)" || return 1
+    config="$(sing_box_cm_configure_dns "$config" "probe-dns" "ipv4_only" true)" || return 1
+    config="$(sing_box_cm_add_direct_outbound "$config" "direct-out")" || return 1
+    config="$(sing_box_cm_add_udp_dns_server "$config" "probe-dns" "1.1.1.1" 53 "" "")" || return 1
+    config="$(sing_box_cm_configure_route "$config" "direct-out" true "probe-dns" "")" || return 1
+
+    index=1
+    outbound_tags=""
+    first_outbound=""
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        outbound_tag="probe-$index-out"
+        config="$(sing_box_cf_add_proxy_outbound "$config" "probe-$index" "$link" "")" || return 1
+
+        if [ -z "$outbound_tags" ]; then
+            outbound_tags="$outbound_tag"
+            first_outbound="$outbound_tag"
+        else
+            outbound_tags="$outbound_tags,$outbound_tag"
+        fi
+        index=$((index + 1))
+    done < "$links_file"
+
+    [ -n "$outbound_tags" ] || return 1
+
+    selector_outbounds="$(comma_string_to_json_array "$outbound_tags")"
+    config="$(sing_box_cm_add_selector_outbound "$config" "probe-out" "$selector_outbounds" "$first_outbound")" || return 1
+    config="$(sing_box_cm_configure_clash_api "$config" "127.0.0.1:$controller_port" "" "")" || return 1
+
+    printf '%s' "$config" | jq . > "$config_file" || return 1
+    sing-box -c "$config_file" check > /dev/null 2>&1
+}
+
+wait_probe_controller() {
+    local controller_port="$1"
+    local attempt
+
+    attempt=0
+    while [ "$attempt" -lt 8 ]; do
+        if curl -s --noproxy '*' --connect-timeout 1 --max-time 1 \
+            "http://127.0.0.1:$controller_port/proxies" |
+            jq -e '.proxies' > /dev/null 2>&1; then
+            return 0
+        fi
+        attempt=$((attempt + 1))
+        sleep 1
+    done
+
+    return 1
+}
+
+run_probe_config() {
+    local config_file="$1"
+    local controller_port="$2"
+    local response_file="$3"
+    local log_file pid response
+
+    log_file="$(mktemp)"
+    sing-box run -c "$config_file" > /dev/null 2> "$log_file" &
+    pid="$!"
+
+    if ! wait_probe_controller "$controller_port"; then
+        kill "$pid" > /dev/null 2>&1 || true
+        wait "$pid" > /dev/null 2>&1 || true
+        rm -f "$log_file"
+        return 1
+    fi
+
+    response="$(
+        curl -G -s --noproxy '*' \
+            --connect-timeout 2 \
+            --max-time 40 \
+            "http://127.0.0.1:$controller_port/group/probe-out/delay" \
+            --data-urlencode "url=https://www.gstatic.com/generate_204" \
+            --data-urlencode "timeout=5000" 2> /dev/null || true
+    )"
+
+    kill "$pid" > /dev/null 2>&1 || true
+    wait "$pid" > /dev/null 2>&1 || true
+    rm -f "$log_file"
+
+    printf '%s' "$response" | jq . > "$response_file" 2> /dev/null || return 1
+    jq -e 'type == "object" and ((.message? // "") == "")' "$response_file" > /dev/null 2>&1
+}
+
+probe_links_latency_to_file() {
+    local links_file="$1"
+    local response_file="$2"
+    local controller_port config_file
+
+    load_podkop_probe_helpers || return 1
+
+    controller_port="$(get_probe_port)"
+    config_file="$(mktemp)"
+
+    if ! build_probe_config "$links_file" "$controller_port" "$config_file"; then
+        rm -f "$config_file"
+        return 1
+    fi
+
+    if ! run_probe_config "$config_file" "$controller_port" "$response_file"; then
+        rm -f "$config_file"
+        return 1
+    fi
+
+    rm -f "$config_file"
+}
+
+json_latency_result_for_index() {
+    local response_file="$1"
+    local index="$2"
+    local tag latency
+
+    tag="probe-$index-out"
+    latency="$(jq -r --arg tag "$tag" '.[$tag] // empty' "$response_file" 2> /dev/null)"
+
+    case "$latency" in
+    '' | null | *[!0-9]*)
+        printf '"success":false,"error":'
+        json_string "Ping failed"
+        ;;
+    *)
+        printf '"success":true,"latency_ms":'
+        json_string "$latency"
+        ;;
+    esac
+}
+
+section_has_backend_outbound() {
+    local section="$1"
+
+    [ -n "$(uci -q get "podkop.$section.proxy_string")" ] && return 0
+    [ -n "$(uci -q get "podkop.$section.selector_proxy_links")" ] && return 0
+    [ -n "$(uci -q get "podkop.$section.urltest_proxy_links")" ] && return 0
+    [ -n "$(uci -q get "podkop.$section.outbound_json")" ] && return 0
+    [ -n "$(uci -q get "podkop.$section.interface")" ] && return 0
+
+    return 1
+}
+
+ensure_subscription_backend_outbound() {
+    local section="$1"
+    local links_file="$2"
+    local selected first_link
+
+    selected="$(uci -q get "podkop.$section.subscription_selected_proxy_link")"
+    if [ -n "$selected" ]; then
+        uci set "podkop.$section.proxy_config_type=selector"
+        uci -q delete "podkop.$section.selector_proxy_links"
+        uci add_list "podkop.$section.selector_proxy_links=$selected"
+        return
+    fi
+
+    if section_has_backend_outbound "$section"; then
+        return
+    fi
+
+    first_link="$(sed -n '/./{p;q}' "$links_file")"
+    [ -n "$first_link" ] || return
+
+    uci set "podkop.$section.proxy_config_type=selector"
+    uci set "podkop.$section.subscription_selected_proxy_link=$first_link"
+    uci -q delete "podkop.$section.selector_proxy_links"
+    uci add_list "podkop.$section.selector_proxy_links=$first_link"
 }
 
 convert_crlf_to_lf() {
@@ -711,6 +837,7 @@ sync_subscription() {
         [ -n "$link" ] && uci add_list "podkop.$section.subscription_proxy_links=$link"
     done < "$output_file"
 
+    ensure_subscription_backend_outbound "$section" "$output_file"
     remove_old_subscription_cron_jobs
 
     uci commit podkop || {
@@ -772,20 +899,24 @@ apply_server() {
 
 ping_link_latency() {
     local link="$1"
-    local host port latency
+    local links_file response_file latency
 
     if ! is_proxy_url "$link"; then
         return 1
     fi
 
-    host="$(url_get_host "$link")"
-    port="$(first_probe_port "$(url_get_port "$link")")"
-    [ -n "$host" ] || return 1
-    is_valid_port_number "$port" || return 1
+    links_file="$(mktemp)"
+    response_file="$(mktemp)"
+    printf '%s\n' "$link" > "$links_file"
 
-    latency="$(probe_link_latency "$host" "$port")"
+    if probe_links_latency_to_file "$links_file" "$response_file"; then
+        latency="$(jq -r '."probe-1-out" // empty' "$response_file" 2> /dev/null)"
+    fi
 
-    [ -n "$latency" ] || return 1
+    rm -f "$links_file" "$response_file"
+    case "$latency" in
+    '' | null | *[!0-9]*) return 1 ;;
+    esac
     printf '%s' "$latency"
 }
 
@@ -810,32 +941,51 @@ ping_server() {
 
 ping_servers() {
     local links="$1"
-    local index link latency first
+    local links_file response_file index link first probe_success
 
     [ -n "$links" ] || {
         json_error "Proxy links are required"
         return 1
     }
 
+    links_file="$(mktemp)"
+    response_file="$(mktemp)"
+    printf '%s\n' "$links" |
+        while IFS= read -r link; do
+            [ -n "$link" ] && printf '%s\n' "$link"
+        done > "$links_file"
+
+    if [ ! -s "$links_file" ]; then
+        rm -f "$links_file" "$response_file"
+        json_error "Proxy links are required"
+        return 1
+    fi
+
+    probe_success=0
+    if probe_links_latency_to_file "$links_file" "$response_file"; then
+        probe_success=1
+    fi
+
     printf '{"success":true,"results":['
     index=1
     first=1
-    printf '%s\n' "$links" | while IFS= read -r link; do
+    while IFS= read -r link; do
         [ -n "$link" ] || continue
         [ "$first" -eq 0 ] && printf ','
         first=0
         printf '{"index":%s,' "$index"
-        if latency="$(ping_link_latency "$link")"; then
-            printf '"success":true,"latency_ms":'
-            json_string "$latency"
+        if [ "$probe_success" -eq 1 ]; then
+            json_latency_result_for_index "$response_file" "$index"
         else
             printf '"success":false,"error":'
             json_string "Ping failed"
         fi
         printf '}'
         index=$((index + 1))
-    done
+    done < "$links_file"
     printf ']}\n'
+
+    rm -f "$links_file" "$response_file"
 }
 
 case "${1:-}" in

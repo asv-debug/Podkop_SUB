@@ -274,8 +274,14 @@ function createSectionContent(section) {
   };
   o.write = function (section_id, value) {
     if (value === "subscription") {
-      if (getActiveSubscriptionLink(section_id)) {
+      const activeLink = getActiveSubscriptionLink(section_id);
+      const currentType = uci.get("podkop", section_id, "proxy_config_type");
+
+      if (activeLink) {
         uci.set("podkop", section_id, "proxy_config_type", "selector");
+        uci.set("podkop", section_id, "selector_proxy_links", [activeLink]);
+      } else if (!currentType || currentType === "subscription") {
+        uci.set("podkop", section_id, "proxy_config_type", "url");
       }
       return;
     }

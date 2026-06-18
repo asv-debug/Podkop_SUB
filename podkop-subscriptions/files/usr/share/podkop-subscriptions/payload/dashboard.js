@@ -152,6 +152,106 @@ function getSubscriptionServerCard(sectionId, index) {
   );
 }
 
+function getLatencyLoadingTimers() {
+  if (typeof window === "undefined") {
+    return {};
+  }
+
+  window.__podkopSubscriptionLatencyTimers =
+    window.__podkopSubscriptionLatencyTimers || {};
+
+  return window.__podkopSubscriptionLatencyTimers;
+}
+
+function stopSubscriptionLatencyLoading(sectionId, index) {
+  const key = `${sectionId}:${index}`;
+  const timers = getLatencyLoadingTimers();
+
+  if (timers[key]) {
+    window.clearInterval(timers[key]);
+    delete timers[key];
+  }
+
+  const card = getSubscriptionServerCard(sectionId, index);
+  const node = card
+    ? card.querySelector(".podkop-subscription-dashboard-latency")
+    : null;
+
+  if (node) {
+    node.classList.remove("podkop-subscription-dashboard-latency-loading");
+  }
+}
+
+function startSubscriptionLatencyLoading(sectionId, index) {
+  const card = getSubscriptionServerCard(sectionId, index);
+  const node = card
+    ? card.querySelector(".podkop-subscription-dashboard-latency")
+    : null;
+
+  if (!node || typeof window === "undefined") {
+    return;
+  }
+
+  stopSubscriptionLatencyLoading(sectionId, index);
+  node.classList.remove(
+    "podkop-subscription-dashboard-latency-empty",
+    "podkop-subscription-dashboard-latency-green",
+    "podkop-subscription-dashboard-latency-yellow",
+    "podkop-subscription-dashboard-latency-red",
+  );
+  node.classList.add("podkop-subscription-dashboard-latency-loading");
+
+  const frames = [".", "..", "..."];
+  let frame = 0;
+  const tick = () => {
+    node.textContent = frames[frame % frames.length];
+    frame += 1;
+  };
+
+  tick();
+  getLatencyLoadingTimers()[`${sectionId}:${index}`] = window.setInterval(
+    tick,
+    350,
+  );
+}
+
+function startSubscriptionLatenciesLoading(sectionId, count) {
+  for (let index = 1; index <= count; index += 1) {
+    startSubscriptionLatencyLoading(sectionId, index);
+  }
+}
+
+function clearSubscriptionLatenciesLoading(sectionId, count) {
+  for (let index = 1; index <= count; index += 1) {
+    stopSubscriptionLatencyLoading(sectionId, index);
+  }
+}
+
+function startButtonLoading(button) {
+  if (!button || typeof window === "undefined") {
+    return () => {};
+  }
+
+  const oldText = button.textContent;
+  const baseText = i18n("Pinging", "Пинг");
+  const frames = [".", "..", "..."];
+  let frame = 0;
+
+  button.disabled = true;
+  const tick = () => {
+    button.textContent = `${baseText}${frames[frame % frames.length]}`;
+    frame += 1;
+  };
+  tick();
+
+  const timer = window.setInterval(tick, 350);
+  return () => {
+    window.clearInterval(timer);
+    button.disabled = false;
+    button.textContent = oldText;
+  };
+}
+
 function updateSubscriptionLatency(sectionId, index, latency, success) {
   const card = getSubscriptionServerCard(sectionId, index);
   if (!card) {
@@ -163,6 +263,7 @@ function updateSubscriptionLatency(sectionId, index, latency, success) {
     return;
   }
 
+  stopSubscriptionLatencyLoading(sectionId, index);
   node.classList.remove(
     "podkop-subscription-dashboard-latency-empty",
     "podkop-subscription-dashboard-latency-green",
@@ -187,17 +288,14 @@ function updateSubscriptionLatency(sectionId, index, latency, success) {
   }
 }
 
-function pingSubscriptionServers(sectionId, links, button) {
-  const oldText = button ? button.textContent : "";
-
+function pingSubscriptionServers(sectionId, links, button, options) {
   if (!links.length) {
     return Promise.resolve();
   }
 
-  if (button) {
-    button.disabled = true;
-    button.textContent = i18n("Pinging...", "Пинг...");
-  }
+  const opts = options || {};
+  const stopButtonLoading = startButtonLoading(button);
+  startSubscriptionLatenciesLoading(sectionId, links.length);
 
   return fs
     .exec("/usr/bin/podkop-subscriptions", ["ping-list", links.join("\n")])
@@ -217,17 +315,22 @@ function pingSubscriptionServers(sectionId, links, button) {
       });
     })
     .catch((error) => {
-      ui.addNotification(
-        null,
-        E("p", {}, [String(error.message || error)]),
-        "danger",
+      clearSubscriptionLatenciesLoading(sectionId, links.length);
+      links.forEach((_, index) =>
+        updateSubscriptionLatency(sectionId, index + 1, null, false),
       );
+
+      if (!opts.silent) {
+        ui.addNotification(
+          null,
+          E("p", {}, [String(error.message || error)]),
+          "danger",
+        );
+      }
     })
     .finally(() => {
-      if (button) {
-        button.disabled = false;
-        button.textContent = oldText;
-      }
+      clearSubscriptionLatenciesLoading(sectionId, links.length);
+      stopButtonLoading();
     });
 }
 
@@ -284,6 +387,7 @@ function renderSubscriptionStyles() {
     ".podkop-subscription-dashboard-latency-green{color:#4caf50}",
     ".podkop-subscription-dashboard-latency-yellow{color:#ff9800}",
     ".podkop-subscription-dashboard-latency-red{color:#f44336}",
+    ".podkop-subscription-dashboard-latency-loading{color:#56b4e9;letter-spacing:2px;min-width:24px;text-align:right}",
   ].join("\n"));
 }
 
@@ -374,12 +478,41 @@ function renderSubscriptionSection(section) {
   ]);
 }
 
+function scheduleSubscriptionAutoPing(sections) {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const key = sections
+    .map((section) => `${section.id}:${section.links.length}:${section.selectedLink}`)
+    .join("|");
+
+  if (window.__podkopSubscriptionAutoPingKey === key) {
+    return;
+  }
+
+  window.__podkopSubscriptionAutoPingKey = key;
+  window.setTimeout(() => {
+    let queue = Promise.resolve();
+
+    sections.forEach((section) => {
+      queue = queue.then(() =>
+        pingSubscriptionServers(section.id, section.links, null, {
+          silent: true,
+        }),
+      );
+    });
+  }, 250);
+}
+
 function renderSubscriptionDashboard() {
   const sections = getSubscriptionSections();
 
   if (!sections.length) {
     return "";
   }
+
+  scheduleSubscriptionAutoPing(sections);
 
   return E("div", { class: "podkop-subscription-dashboard" }, [
     renderSubscriptionStyles(),
