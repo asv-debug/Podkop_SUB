@@ -2,7 +2,7 @@
 
 REPO="https://api.github.com/repos/asv-debug/Podkop_SUB/releases/latest"
 LATEST_DOWNLOAD_BASE="https://github.com/asv-debug/Podkop_SUB/releases/latest/download"
-CDN_REF="${PODKOP_SUBSCRIPTIONS_CDN_REF:-fea9b44}"
+CDN_REF="${PODKOP_SUBSCRIPTIONS_CDN_REF:-128a6ea}"
 CDN_DOWNLOAD_BASE="https://cdn.jsdelivr.net/gh/asv-debug/Podkop_SUB@$CDN_REF/packages"
 RAW_DOWNLOAD_BASE="https://raw.githubusercontent.com/asv-debug/Podkop_SUB/main/packages"
 DOWNLOAD_DIR="/tmp/podkop-subscriptions"
