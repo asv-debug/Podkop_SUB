@@ -312,8 +312,9 @@ wait_probe_controller() {
 run_probe_config() {
     local config_file="$1"
     local controller_port="$2"
-    local response_file="$3"
-    local log_file pid response
+    local links_file="$3"
+    local response_file="$4"
+    local log_file result_dir pid probe_pids probe_pid index link tag response latency tmpfile
 
     log_file="$(mktemp)"
     sing-box run -c "$config_file" > /dev/null 2> "$log_file" &
@@ -326,21 +327,69 @@ run_probe_config() {
         return 1
     fi
 
-    response="$(
-        curl -G -s --noproxy '*' \
-            --connect-timeout 2 \
-            --max-time 40 \
-            "http://127.0.0.1:$controller_port/group/probe-out/delay" \
-            --data-urlencode "url=https://www.gstatic.com/generate_204" \
-            --data-urlencode "timeout=5000" 2> /dev/null || true
-    )"
+    result_dir="/tmp/podkop-subscriptions-probe.$$"
+    rm -rf "$result_dir"
+    mkdir -p "$result_dir" || {
+        kill "$pid" > /dev/null 2>&1 || true
+        wait "$pid" > /dev/null 2>&1 || true
+        rm -f "$log_file"
+        return 1
+    }
+
+    index=1
+    probe_pids=""
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        tag="probe-$index-out"
+        (
+            response="$(
+                curl -G -s --noproxy '*' \
+                    --connect-timeout 2 \
+                    --max-time 8 \
+                    "http://127.0.0.1:$controller_port/proxies/$tag/delay" \
+                    --data-urlencode "url=https://www.gstatic.com/generate_204" \
+                    --data-urlencode "timeout=5000" 2> /dev/null || true
+            )"
+            latency="$(printf '%s' "$response" | jq -r '.delay // empty' 2> /dev/null)"
+            case "$latency" in
+            '' | null | *[!0-9]*) ;;
+            *) printf '%s\n' "$latency" > "$result_dir/$index" ;;
+            esac
+        ) &
+        probe_pids="$probe_pids $!"
+
+        index=$((index + 1))
+    done < "$links_file"
+
+    for probe_pid in $probe_pids; do
+        wait "$probe_pid" > /dev/null 2>&1 || true
+    done
 
     kill "$pid" > /dev/null 2>&1 || true
     wait "$pid" > /dev/null 2>&1 || true
     rm -f "$log_file"
 
-    printf '%s' "$response" | jq . > "$response_file" 2> /dev/null || return 1
-    jq -e 'type == "object" and ((.message? // "") == "")' "$response_file" > /dev/null 2>&1
+    printf '{}\n' > "$response_file"
+    index=1
+    while IFS= read -r link; do
+        [ -n "$link" ] || continue
+        tag="probe-$index-out"
+        latency="$(cat "$result_dir/$index" 2> /dev/null || true)"
+        case "$latency" in
+        '' | null | *[!0-9]*) ;;
+        *)
+            tmpfile="$(mktemp)"
+            jq --arg tag "$tag" --argjson latency "$latency" \
+                '. + {($tag): $latency}' "$response_file" > "$tmpfile" &&
+                mv "$tmpfile" "$response_file"
+            rm -f "$tmpfile"
+            ;;
+        esac
+        index=$((index + 1))
+    done < "$links_file"
+    rm -rf "$result_dir"
+
+    jq -e 'type == "object"' "$response_file" > /dev/null 2>&1
 }
 
 probe_links_latency_to_file() {
@@ -358,7 +407,7 @@ probe_links_latency_to_file() {
         return 1
     fi
 
-    if ! run_probe_config "$config_file" "$controller_port" "$response_file"; then
+    if ! run_probe_config "$config_file" "$controller_port" "$links_file" "$response_file"; then
         rm -f "$config_file"
         return 1
     fi
@@ -907,6 +956,7 @@ ping_link_latency() {
 
     links_file="$(mktemp)"
     response_file="$(mktemp)"
+    latency=""
     printf '%s\n' "$link" > "$links_file"
 
     if probe_links_latency_to_file "$links_file" "$response_file"; then
@@ -941,7 +991,7 @@ ping_server() {
 
 ping_servers() {
     local links="$1"
-    local links_file response_file index link first probe_success
+    local links_file response_file index link first probe_success latency
 
     [ -n "$links" ] || {
         json_error "Proxy links are required"
@@ -976,6 +1026,9 @@ ping_servers() {
         printf '{"index":%s,' "$index"
         if [ "$probe_success" -eq 1 ]; then
             json_latency_result_for_index "$response_file" "$index"
+        elif latency="$(ping_link_latency "$link")"; then
+            printf '"success":true,"latency_ms":'
+            json_string "$latency"
         else
             printf '"success":false,"error":'
             json_string "Ping failed"
