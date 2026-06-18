@@ -59,6 +59,70 @@ url_get_port() {
     [ "$url" != "${url#*:}" ] && echo "${url#*:}" || echo ""
 }
 
+first_probe_port() {
+    local port="$1"
+
+    port="${port%%,*}"
+    port="${port%%-*}"
+    echo "$port"
+}
+
+now_ms() {
+    awk '{ printf "%d", ($1 * 1000) }' /proc/uptime 2> /dev/null || date +%s000
+}
+
+seconds_to_ms() {
+    local seconds="$1"
+
+    echo "$seconds" |
+        awk '
+            /^[0-9]+(\.[0-9]+)?$/ {
+                if ($1 <= 0) {
+                    exit 1
+                }
+                ms = int(($1 * 1000) + 0.5)
+                if (ms < 1) {
+                    ms = 1
+                }
+                print ms
+                ok = 1
+            }
+            END {
+                if (!ok) {
+                    exit 1
+                }
+            }
+        '
+}
+
+curl_https_latency() {
+    local host="$1"
+    local port="$2"
+    local seconds latency
+
+    command -v curl > /dev/null 2>&1 || return 1
+
+    seconds="$(
+        curl -k -s -o /dev/null \
+            --noproxy '*' \
+            --connect-timeout 2 \
+            --max-time 3 \
+            -w '%{time_connect}' \
+            "https://$host:$port/" 2> /dev/null || true
+    )"
+    latency="$(seconds_to_ms "$seconds")" || return 1
+    [ "$latency" -gt 0 ] || return 1
+
+    printf '%s' "$latency"
+}
+
+probe_link_latency() {
+    local host="$1"
+    local port="$2"
+
+    curl_https_latency "$host" "$port"
+}
+
 url_get_fragment() {
     local url="$1"
 
@@ -708,20 +772,18 @@ apply_server() {
 
 ping_link_latency() {
     local link="$1"
-    local host latency
+    local host port latency
 
     if ! is_proxy_url "$link"; then
         return 1
     fi
 
     host="$(url_get_host "$link")"
+    port="$(first_probe_port "$(url_get_port "$link")")"
     [ -n "$host" ] || return 1
+    is_valid_port_number "$port" || return 1
 
-    latency="$(
-        ping -c 1 -W 1 "$host" 2>/dev/null |
-            sed -n 's/.*time=\([0-9.][0-9.]*\).*/\1/p' |
-            head -n 1
-    )"
+    latency="$(probe_link_latency "$host" "$port")"
 
     [ -n "$latency" ] || return 1
     printf '%s' "$latency"

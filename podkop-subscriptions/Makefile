@@ -15,6 +15,7 @@ define Package/podkop-subscriptions
 	TITLE:=Podkop subscription importer addon
 	URL:=https://github.com/asv-debug/Podkop_SUB
 	PKGARCH:=all
+	DEPENDS:=+curl
 endef
 
 define Package/podkop-subscriptions/description

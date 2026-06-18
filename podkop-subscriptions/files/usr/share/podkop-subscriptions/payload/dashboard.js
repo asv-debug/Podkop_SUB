@@ -289,6 +289,20 @@ function renderSubscriptionStyles() {
 
 function renderSubscriptionCard(section, link, index) {
   const active = link === section.selectedLink;
+  const buttonAttrs = {
+    class: "btn cbi-button cbi-button-apply",
+    type: "button",
+    click: (ev) =>
+      applySubscriptionServer(
+        section.id,
+        link,
+        ev.currentTarget.closest(".podkop-subscription-dashboard-card"),
+      ),
+  };
+
+  if (active) {
+    buttonAttrs.disabled = "disabled";
+  }
 
   return E(
     "div",
@@ -317,17 +331,7 @@ function renderSubscriptionCard(section, link, index) {
       E("div", { class: "podkop-subscription-dashboard-card-action" }, [
         E(
           "button",
-          {
-            class: "btn cbi-button cbi-button-apply",
-            type: "button",
-            disabled: active,
-            click: (ev) =>
-              applySubscriptionServer(
-                section.id,
-                link,
-                ev.currentTarget.closest(".podkop-subscription-dashboard-card"),
-              ),
-          },
+          buttonAttrs,
           active
             ? i18n("Selected", "Выбран")
             : i18n("Select server", "Выбрать сервер"),
