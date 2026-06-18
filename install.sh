@@ -50,6 +50,21 @@ pkg_install() {
     fi
 }
 
+install_runtime_dependencies() {
+    command -v curl >/dev/null 2>&1 && return 0
+
+    msg "Installing curl dependency..."
+    if [ "$PKG_IS_APK" -eq 1 ]; then
+        apk update >/dev/null 2>&1 || true
+        apk add curl >/dev/null 2>&1 ||
+            msg "Could not pre-install curl; package manager will try to resolve it while installing the addon."
+    else
+        opkg update >/dev/null 2>&1 || true
+        opkg install curl >/dev/null 2>&1 ||
+            msg "Could not pre-install curl; package manager will try to resolve it while installing the addon."
+    fi
+}
+
 download_file() {
     local url="$1"
     local filepath="$2"
@@ -114,6 +129,8 @@ main() {
 
         download_file "$url" "$filepath" "$filename" || fail "Failed to download $filename"
     fi
+
+    install_runtime_dependencies
 
     msg "Installing $filename..."
     pkg_install "$filepath" || fail "Failed to install $filename"
