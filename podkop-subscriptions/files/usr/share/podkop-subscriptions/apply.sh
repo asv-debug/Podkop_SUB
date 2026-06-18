@@ -90,6 +90,56 @@ remove_old_subscription_cron_jobs() {
     rm -f "$tmpfile"
 }
 
+first_uci_list_value() {
+    local value
+
+    for value in $1; do
+        printf '%s' "$value"
+        return 0
+    done
+
+    return 1
+}
+
+repair_subscription_backends() {
+    local section type selected subscription_links selector_links link changed
+
+    command -v uci >/dev/null 2>&1 || return 0
+
+    changed=0
+    for section in $(uci -q show podkop | sed -n 's/^podkop\.\([^.=]*\)\..*/\1/p' | awk '!seen[$0]++'); do
+        [ "$section" = "settings" ] && continue
+
+        type="$(uci -q get "podkop.$section.proxy_config_type")"
+        selected="$(uci -q get "podkop.$section.subscription_selected_proxy_link")"
+        subscription_links="$(uci -q get "podkop.$section.subscription_proxy_links")"
+        selector_links="$(uci -q get "podkop.$section.selector_proxy_links")"
+
+        [ -n "$selected$subscription_links" ] || [ "$type" = "subscription" ] || continue
+
+        link="$selected"
+        if [ -z "$link" ]; then
+            link="$(first_uci_list_value "$subscription_links")"
+        fi
+        if [ -z "$link" ]; then
+            link="$(first_uci_list_value "$selector_links")"
+        fi
+        [ -n "$link" ] || continue
+
+        uci set "podkop.$section.connection_type=proxy"
+        uci set "podkop.$section.proxy_config_type=selector"
+        uci set "podkop.$section.subscription_selected_proxy_link=$link"
+        uci -q delete "podkop.$section.selector_proxy_links"
+        uci add_list "podkop.$section.selector_proxy_links=$link"
+        changed=1
+    done
+
+    if [ "$changed" -eq 1 ]; then
+        uci commit podkop >/dev/null 2>&1 || true
+        log "repaired subscription-backed Podkop sections"
+    fi
+}
+
 apply_addon() {
     [ -x "$TARGET_PODKOP" ] || fail "Podkop is not installed: $TARGET_PODKOP"
     [ -f "$TARGET_HELPERS" ] || fail "Podkop helpers not found: $TARGET_HELPERS"
@@ -112,6 +162,7 @@ apply_addon() {
     [ -x "$TARGET_CLI" ] || fail "Podkop subscription helper is not installed: $TARGET_CLI"
     [ -f "$TARGET_ACL" ] || fail "Podkop subscription ACL is not installed: $TARGET_ACL"
 
+    repair_subscription_backends
     clear_luci_cache
     log "subscription configuration type applied"
 }
