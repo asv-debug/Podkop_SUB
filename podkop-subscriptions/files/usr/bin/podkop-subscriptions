@@ -282,6 +282,43 @@ seconds_to_ms() {
         '
 }
 
+probe_inbound_latency() {
+    local inbound_port="$1"
+    local elapsed latency
+
+    elapsed="$(
+        curl -f -s -o /dev/null \
+            --connect-timeout 2 \
+            --max-time 8 \
+            -x "http://127.0.0.1:$inbound_port" \
+            -w '%{time_total}' \
+            "https://www.gstatic.com/generate_204" 2> /dev/null || true
+    )"
+    latency="$(seconds_to_ms "$elapsed" 2> /dev/null || true)"
+    case "$latency" in
+    '' | null | *[!0-9]*) ;;
+    *)
+        printf '%s' "$latency"
+        return 0
+        ;;
+    esac
+
+    elapsed="$(
+        curl -f -s -o /dev/null \
+            --connect-timeout 2 \
+            --max-time 8 \
+            --socks5-hostname "127.0.0.1:$inbound_port" \
+            -w '%{time_total}' \
+            "https://www.gstatic.com/generate_204" 2> /dev/null || true
+    )"
+    latency="$(seconds_to_ms "$elapsed" 2> /dev/null || true)"
+    case "$latency" in
+    '' | null | *[!0-9]*) return 1 ;;
+    esac
+
+    printf '%s' "$latency"
+}
+
 build_probe_config() {
     local links_file="$1"
     local controller_port="$2"
@@ -336,7 +373,7 @@ run_probe_config() {
     local controller_port="$2"
     local links_file="$3"
     local response_file="$4"
-    local log_file result_dir pid probe_pids probe_pid index link tag inbound_port elapsed latency tmpfile running max_parallel
+    local log_file result_dir pid index link tag inbound_port latency tmpfile
 
     log_file="$(mktemp)"
     sing-box run -c "$config_file" > /dev/null 2> "$log_file" &
@@ -359,45 +396,18 @@ run_probe_config() {
     }
 
     index=1
-    probe_pids=""
-    running=0
-    max_parallel=6
     while IFS= read -r link; do
         [ -n "$link" ] || continue
         tag="probe-$index-out"
         inbound_port="$(get_probe_inbound_port "$controller_port" "$index")"
-        (
-            elapsed="$(
-                curl -f -s -o /dev/null \
-                    --connect-timeout 2 \
-                    --max-time 8 \
-                    -x "http://127.0.0.1:$inbound_port" \
-                    -w '%{time_total}' \
-                    "https://www.gstatic.com/generate_204" 2> /dev/null || true
-            )"
-            latency="$(seconds_to_ms "$elapsed" 2> /dev/null || true)"
-            case "$latency" in
-            '' | null | *[!0-9]*) ;;
-            *) printf '%s\n' "$latency" > "$result_dir/$index" ;;
-            esac
-        ) &
-        probe_pids="$probe_pids $!"
-        running=$((running + 1))
-
-        if [ "$running" -ge "$max_parallel" ]; then
-            for probe_pid in $probe_pids; do
-                wait "$probe_pid" > /dev/null 2>&1 || true
-            done
-            probe_pids=""
-            running=0
-        fi
+        latency="$(probe_inbound_latency "$inbound_port" 2> /dev/null || true)"
+        case "$latency" in
+        '' | null | *[!0-9]*) ;;
+        *) printf '%s\n' "$latency" > "$result_dir/$index" ;;
+        esac
 
         index=$((index + 1))
     done < "$links_file"
-
-    for probe_pid in $probe_pids; do
-        wait "$probe_pid" > /dev/null 2>&1 || true
-    done
 
     kill "$pid" > /dev/null 2>&1 || true
     wait "$pid" > /dev/null 2>&1 || true
@@ -423,7 +433,7 @@ run_probe_config() {
     done < "$links_file"
     rm -rf "$result_dir"
 
-    jq -e 'type == "object"' "$response_file" > /dev/null 2>&1
+    jq -e 'type == "object" and length > 0' "$response_file" > /dev/null 2>&1
 }
 
 probe_links_latency_to_file() {
@@ -1025,7 +1035,7 @@ ping_server() {
 
 ping_servers() {
     local links="$1"
-    local links_file response_file index link first probe_success latency
+    local links_file response_file index link first probe_success latency tag
 
     [ -n "$links" ] || {
         json_error "Proxy links are required"
@@ -1058,8 +1068,21 @@ ping_servers() {
         [ "$first" -eq 0 ] && printf ','
         first=0
         printf '{"index":%s,' "$index"
+        latency=""
         if [ "$probe_success" -eq 1 ]; then
-            json_latency_result_for_index "$response_file" "$index"
+            tag="probe-$index-out"
+            latency="$(jq -r --arg tag "$tag" '.[$tag] // empty' "$response_file" 2> /dev/null)"
+        fi
+
+        case "$latency" in
+        '' | null | *[!0-9]*)
+            latency=""
+            ;;
+        esac
+
+        if [ -n "$latency" ]; then
+            printf '"success":true,"latency_ms":'
+            json_string "$latency"
         elif latency="$(ping_link_latency "$link")"; then
             printf '"success":true,"latency_ms":'
             json_string "$latency"
