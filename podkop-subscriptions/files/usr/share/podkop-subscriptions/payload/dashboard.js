@@ -295,30 +295,61 @@ function pingSubscriptionServers(sectionId, links, button, options) {
 
   const opts = options || {};
   const stopButtonLoading = startButtonLoading(button);
+  let successCount = 0;
+  let failedCount = 0;
+  let queue = Promise.resolve();
+
   startSubscriptionLatenciesLoading(sectionId, links.length);
 
-  return fs
-    .exec("/usr/bin/podkop-subscriptions", ["ping-list", links.join("\n")])
-    .then((response) => {
-      const payload = parseResponse(response);
-      if (!payload.success) {
-        throw new Error(payload.error || response.stderr || "ping failed");
-      }
+  links.forEach((link, index) => {
+    const serverIndex = index + 1;
 
-      (payload.results || []).forEach((result) => {
-        updateSubscriptionLatency(
-          sectionId,
-          result.index,
-          result.latency_ms,
-          result.success,
+    queue = queue.then(() =>
+      fs
+        .exec("/usr/bin/podkop-subscriptions", ["ping", link])
+        .then((response) => {
+          const payload = parseResponse(response);
+
+          if (payload.success && payload.latency_ms) {
+            successCount += 1;
+            updateSubscriptionLatency(
+              sectionId,
+              serverIndex,
+              payload.latency_ms,
+              true,
+            );
+            return;
+          }
+
+          failedCount += 1;
+          updateSubscriptionLatency(sectionId, serverIndex, null, false);
+        })
+        .catch(() => {
+          failedCount += 1;
+          updateSubscriptionLatency(sectionId, serverIndex, null, false);
+        }),
+    );
+  });
+
+  return queue
+    .then(() => {
+      if (!successCount && failedCount && !opts.silent) {
+        ui.addNotification(
+          null,
+          E("p", {}, [i18n("Ping failed for all servers.", "РџРёРЅРі РЅРµ СѓРґР°Р»СЃСЏ РґР»СЏ РІСЃРµС… СЃРµСЂРІРµСЂРѕРІ.")]),
+          "danger",
         );
-      });
+      }
     })
     .catch((error) => {
-      clearSubscriptionLatenciesLoading(sectionId, links.length);
-      links.forEach((_, index) =>
-        updateSubscriptionLatency(sectionId, index + 1, null, false),
-      );
+      links.forEach((_, index) => {
+        updateSubscriptionLatency(
+          sectionId,
+          index + 1,
+          null,
+          false,
+        );
+      });
 
       if (!opts.silent) {
         ui.addNotification(
