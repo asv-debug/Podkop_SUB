@@ -336,7 +336,7 @@ function pingSubscriptionServers(sectionId, links, button, options) {
       if (!successCount && failedCount && !opts.silent) {
         ui.addNotification(
           null,
-          E("p", {}, [i18n("Ping failed for all servers.", "РџРёРЅРі РЅРµ СѓРґР°Р»СЃСЏ РґР»СЏ РІСЃРµС… СЃРµСЂРІРµСЂРѕРІ.")]),
+          E("p", {}, [i18n("Ping failed for all servers.", "Пинг не удался для всех серверов.")]),
           "danger",
         );
       }

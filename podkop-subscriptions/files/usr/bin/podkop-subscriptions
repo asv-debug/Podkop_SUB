@@ -258,6 +258,114 @@ get_probe_inbound_port() {
     echo $((controller_port + index))
 }
 
+is_ipv4_address() {
+    local value="$1"
+    local old_ifs part count
+
+    old_ifs="$IFS"
+    IFS=.
+    set -- $value
+    IFS="$old_ifs"
+
+    count=0
+    for part in "$@"; do
+        count=$((count + 1))
+        case "$part" in
+        '' | *[!0-9]*) return 1 ;;
+        esac
+        [ "$part" -ge 0 ] 2> /dev/null && [ "$part" -le 255 ] 2> /dev/null || return 1
+    done
+
+    [ "$count" -eq 4 ]
+}
+
+resolve_ipv4_host() {
+    local host="$1"
+
+    is_ipv4_address "$host" && {
+        printf '%s' "$host"
+        return 0
+    }
+
+    nslookup "$host" 2> /dev/null |
+        awk '
+            function valid_ip(value) {
+                return value ~ /^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$/
+            }
+            /^Address[[:space:]]+[0-9]+:/ {
+                if (valid_ip($3)) {
+                    print $3
+                    exit
+                }
+            }
+            /^Address:/ {
+                if ($2 !~ /#/ && valid_ip($2)) {
+                    print $2
+                    exit
+                }
+            }
+        '
+}
+
+replace_proxy_url_host() {
+    local url="$1"
+    local host="$2"
+    local scheme rest authority suffix userinfo hostport port
+
+    scheme="${url%%://*}"
+    rest="${url#*://}"
+    authority="${rest%%[/?#]*}"
+    suffix="${rest#$authority}"
+
+    case "$authority" in
+    *@*)
+        userinfo="${authority%@*}@"
+        hostport="${authority##*@}"
+        ;;
+    *)
+        userinfo=""
+        hostport="$authority"
+        ;;
+    esac
+
+    case "$hostport" in
+    *:*) port=":${hostport##*:}" ;;
+    *) port="" ;;
+    esac
+
+    printf '%s://%s%s%s%s' "$scheme" "$userinfo" "$host" "$port" "$suffix"
+}
+
+prepare_probe_link() {
+    local link="$1"
+    local host security sni resolved
+
+    host="$(url_get_host "$link")"
+    [ -n "$host" ] || {
+        printf '%s' "$link"
+        return 0
+    }
+
+    security="$(url_get_query_param "$link" "security")"
+    sni="$(url_get_query_param "$link" "sni")"
+    case "$security" in
+    tls | reality)
+        [ -n "$sni" ] || {
+            printf '%s' "$link"
+            return 0
+        }
+        ;;
+    esac
+
+    resolved="$(resolve_ipv4_host "$host")"
+    if [ -n "$resolved" ] && [ "$resolved" != "$host" ]; then
+        replace_proxy_url_host "$link" "$resolved"
+        return 0
+    fi
+
+    printf '%s' "$link"
+}
+
 seconds_to_ms() {
     local seconds="$1"
 
@@ -282,48 +390,68 @@ seconds_to_ms() {
         '
 }
 
+probe_curl_latency() {
+    local mode="$1"
+    local proxy="$2"
+    local output status elapsed latency
+
+    case "$mode" in
+    http)
+        output="$(
+            curl -f -s -o /dev/null \
+                --connect-timeout 3 \
+                --max-time 12 \
+                -x "$proxy" \
+                -w '%{http_code} %{time_total}' \
+                "https://www.gstatic.com/generate_204" 2> /dev/null
+        )" || return 1
+        ;;
+    socks)
+        output="$(
+            curl -f -s -o /dev/null \
+                --connect-timeout 3 \
+                --max-time 12 \
+                --socks5-hostname "$proxy" \
+                -w '%{http_code} %{time_total}' \
+                "https://www.gstatic.com/generate_204" 2> /dev/null
+        )" || return 1
+        ;;
+    *) return 1 ;;
+    esac
+
+    status="${output%% *}"
+    elapsed="${output#* }"
+    case "$status" in
+    2* | 3*) ;;
+    *) return 1 ;;
+    esac
+
+    latency="$(seconds_to_ms "$elapsed" 2> /dev/null)" || return 1
+    printf '%s' "$latency"
+}
+
 probe_inbound_latency() {
     local inbound_port="$1"
-    local elapsed latency
+    local latency
 
-    elapsed="$(
-        curl -f -s -o /dev/null \
-            --connect-timeout 2 \
-            --max-time 8 \
-            -x "http://127.0.0.1:$inbound_port" \
-            -w '%{time_total}' \
-            "https://www.gstatic.com/generate_204" 2> /dev/null || true
-    )"
-    latency="$(seconds_to_ms "$elapsed" 2> /dev/null || true)"
-    case "$latency" in
-    '' | null | *[!0-9]*) ;;
-    *)
+    latency="$(probe_curl_latency "http" "http://127.0.0.1:$inbound_port")" && {
         printf '%s' "$latency"
         return 0
-        ;;
-    esac
+    }
 
-    elapsed="$(
-        curl -f -s -o /dev/null \
-            --connect-timeout 2 \
-            --max-time 8 \
-            --socks5-hostname "127.0.0.1:$inbound_port" \
-            -w '%{time_total}' \
-            "https://www.gstatic.com/generate_204" 2> /dev/null || true
-    )"
-    latency="$(seconds_to_ms "$elapsed" 2> /dev/null || true)"
-    case "$latency" in
-    '' | null | *[!0-9]*) return 1 ;;
-    esac
+    latency="$(probe_curl_latency "socks" "127.0.0.1:$inbound_port")" && {
+        printf '%s' "$latency"
+        return 0
+    }
 
-    printf '%s' "$latency"
+    return 1
 }
 
 build_probe_config() {
     local links_file="$1"
     local controller_port="$2"
     local config_file="$3"
-    local config link index inbound_port inbound_tag outbound_tag
+    local config link probe_link index inbound_port inbound_tag outbound_tag
 
     config='{"log":{},"dns":{},"ntp":{},"certificate":{},"endpoints":[],"inbounds":[],"outbounds":[],"route":{},"services":[],"experimental":{}}'
     config="$(sing_box_cm_configure_log "$config" true "error" false)" || return 1
@@ -338,34 +466,16 @@ build_probe_config() {
         inbound_tag="probe-$index-in"
         inbound_port="$(get_probe_inbound_port "$controller_port" "$index")"
         outbound_tag="probe-$index-out"
-        config="$(sing_box_cf_add_proxy_outbound "$config" "probe-$index" "$link" "")" || return 1
+        probe_link="$(prepare_probe_link "$link")"
+        config="$(sing_box_cf_add_proxy_outbound "$config" "probe-$index" "$probe_link" "")" || return 1
         config="$(sing_box_cf_add_mixed_inbound_and_route_rule "$config" "$inbound_tag" "127.0.0.1" "$inbound_port" "$outbound_tag")" || return 1
         index=$((index + 1))
     done < "$links_file"
 
     [ "$index" -gt 1 ] || return 1
-    config="$(sing_box_cm_configure_clash_api "$config" "127.0.0.1:$controller_port" "" "")" || return 1
 
-    printf '%s' "$config" | jq . > "$config_file" || return 1
+    sing_box_cm_save_config_to_file "$config" "$config_file" || return 1
     sing-box -c "$config_file" check > /dev/null 2>&1
-}
-
-wait_probe_controller() {
-    local controller_port="$1"
-    local attempt
-
-    attempt=0
-    while [ "$attempt" -lt 8 ]; do
-        if curl -s --noproxy '*' --connect-timeout 1 --max-time 1 \
-            "http://127.0.0.1:$controller_port/proxies" |
-            jq -e '.proxies' > /dev/null 2>&1; then
-            return 0
-        fi
-        attempt=$((attempt + 1))
-        sleep 1
-    done
-
-    return 1
 }
 
 run_probe_config() {
@@ -379,12 +489,7 @@ run_probe_config() {
     sing-box run -c "$config_file" > /dev/null 2> "$log_file" &
     pid="$!"
 
-    if ! wait_probe_controller "$controller_port"; then
-        kill "$pid" > /dev/null 2>&1 || true
-        wait "$pid" > /dev/null 2>&1 || true
-        rm -f "$log_file"
-        return 1
-    fi
+    sleep 1
 
     result_dir="/tmp/podkop-subscriptions-probe.$$"
     rm -rf "$result_dir"
